@@ -41,6 +41,7 @@ fn main() -> ExitCode {
 }
 
 fn run_daemon() -> ExitCode {
+    use_vulkan_by_default();
     let listener = match ipc::bind() {
         Ok(listener) => listener,
         Err(error) => {
@@ -72,6 +73,15 @@ fn run_daemon() -> ExitCode {
             eprintln!("hidebar: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Vulkan por defecto (ADR-0003): sin esto, wgpu enumera también GL y EGL carga todos los
+/// drivers instalados. Se respeta un `WGPU_BACKEND` explícito.
+fn use_vulkan_by_default() {
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: se llama al inicio de `run_daemon`, antes de crear ningún hilo.
+        unsafe { std::env::set_var("WGPU_BACKEND", "vulkan") };
     }
 }
 

@@ -54,6 +54,9 @@ The interface (dates, CLI messages) is in Spanish.
 - Hyprland (uses `wlr-layer-shell` and Hyprland's IPC for workspaces).
 - Rust 1.88 or later (2024 edition).
 - Optional: `pactl` for the mute indicator.
+- Vulkan drivers for your GPU (e.g. `vulkan-radeon`, `vulkan-intel`, `nvidia-utils`). The daemon uses Vulkan by
+  default, which keeps memory low (~120 MB RSS instead of ~275 MB when GL/EGL loads every installed driver).
+  Set `WGPU_BACKEND=gl` to override it.
 
 ## Installation
 
@@ -147,6 +150,8 @@ Useful environment variables:
 
 - `HIDEBAR_BATTERY_PATH`: a directory with `capacity` (e.g. `8`) and `status` (e.g. `Discharging`) files, to
   simulate battery levels without waiting for it to drain.
+- `WGPU_BACKEND`: graphics backend for wgpu. The daemon sets it to `vulkan` when it is unset; any explicit value
+  (e.g. `gl`) is respected.
 
 Layout:
 
