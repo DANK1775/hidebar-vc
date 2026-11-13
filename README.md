@@ -6,8 +6,6 @@ It is not a bar: it reserves no screen space, never takes the cursor (clicks pas
 when you call it with a keybinding or when something relevant happens (you switch workspace, the network drops,
 you plug in the charger…). The rest of the time nothing is drawn.
 
-![hidebar with every module pinned over the desktop](docs/screenshot.jpg)
-
 ![Close-up of the top strip: workspaces, clock, and network, CPU, RAM, mute and battery](docs/strip.png)
 
 > [!WARNING]
