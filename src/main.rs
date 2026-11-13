@@ -5,6 +5,7 @@ mod event;
 mod hyprland;
 mod ipc;
 mod network;
+mod niri;
 mod system;
 
 use std::process::ExitCode;
@@ -59,7 +60,15 @@ fn run_daemon() -> ExitCode {
         let events = sender.clone();
         move |event| events.unbounded_send(Input::Event(event)).is_ok()
     };
-    hyprland::listen(emitter());
+    if std::env::var_os("NIRI_SOCKET").is_some() {
+        niri::listen(emitter());
+    } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        hyprland::listen(emitter());
+    } else {
+        eprintln!(
+            "hidebar: ni NIRI_SOCKET ni HYPRLAND_INSTANCE_SIGNATURE definido; sin eventos de workspaces"
+        );
+    }
     battery::listen(emitter());
     system::listen(emitter());
     network::listen(emitter());
