@@ -1,0 +1,7 @@
+/target
+__pycache__/
+
+# Local working notes (not published)
+/plan/
+/AGENT.md
+/CLAUDE.md
