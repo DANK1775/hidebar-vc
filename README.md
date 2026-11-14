@@ -1,6 +1,6 @@
 # hidebar
 
-A minimal status overlay for **Hyprland**, written in Rust.
+A minimal status overlay for **Hyprland** and **Niri**, written in Rust.
 
 It is not a bar: it reserves no screen space, never takes the cursor (clicks pass through it) and only shows up
 when you call it with a keybinding or when something relevant happens (you switch workspace, the network drops,
