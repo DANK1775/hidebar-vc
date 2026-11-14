@@ -125,7 +125,7 @@ longer reach your browser (reopen tab, close window, bookmarks bar, add-ons). If
 Restart the daemon after updating the binary:
 
 ```sh
-pkill -f 'hidebar daemon'; hyprctl dispatch exec ~/.local/bin/hidebar daemon
+pkill -x hidebar; hyprctl dispatch exec ~/.local/bin/hidebar daemon
 ```
 
 ## Niri configuration
