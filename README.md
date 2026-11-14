@@ -1,6 +1,6 @@
 # hidebar
 
-A minimal status overlay for **Hyprland**, written in Rust.
+A minimal status overlay for **Hyprland** and **Niri**, written in Rust.
 
 It is not a bar: it reserves no screen space, never takes the cursor (clicks pass through it) and only shows up
 when you call it with a keybinding or when something relevant happens (you switch workspace, the network drops,
@@ -51,7 +51,7 @@ The interface (dates, CLI messages) is in Spanish.
 
 ## Requirements
 
-- Hyprland (uses `wlr-layer-shell` and Hyprland's IPC for workspaces).
+- Hyprland or Niri (uses `wlr-layer-shell`; workspaces come from the compositor's IPC).
 - Rust 1.88 or later (2024 edition).
 - Optional: `pactl` for the mute indicator.
 - Vulkan drivers for your GPU (e.g. `vulkan-radeon`, `vulkan-intel`, `nvidia-utils`). The daemon uses Vulkan by
@@ -128,6 +128,27 @@ Restart the daemon after updating the binary:
 pkill -f 'hidebar daemon'; hyprctl dispatch exec ~/.local/bin/hidebar daemon
 ```
 
+## Niri configuration
+
+In `~/.config/niri/config.kdl`, add a startup and binds (adjust the path):
+
+```kdl
+spawn-at-startup "~/.local/bin/hidebar" "daemon"
+
+binds {
+    Ctrl+Shift+T { spawn "~/.local/bin/hidebar" "show" "clock"; }
+    Ctrl+Shift+Alt+T { spawn "~/.local/bin/hidebar" "toggle" "clock"; }
+    Ctrl+Shift+B { spawn "~/.local/bin/hidebar" "show" "status"; }
+    Ctrl+Shift+Alt+B { spawn "~/.local/bin/hidebar" "toggle" "status"; }
+    Ctrl+Shift+W { spawn "~/.local/bin/hidebar" "show" "workspaces"; }
+    Ctrl+Shift+Alt+W { spawn "~/.local/bin/hidebar" "toggle" "workspaces"; }
+    Ctrl+Shift+A { spawn "~/.local/bin/hidebar" "show" "all"; }
+    Ctrl+Shift+Alt+A { spawn "~/.local/bin/hidebar" "toggle" "all"; }
+}
+```
+
+Restart the daemon after updating the binary with `pkill -x hidebar` and start it again from Niri.
+
 ## Development
 
 ```sh
@@ -160,6 +181,7 @@ src/main.rs          CLI: daemon and client
 src/ipc.rs           commands and Unix socket
 src/event.rs         events emitted by the sources
 src/hyprland.rs      workspaces (Hyprland IPC)
+src/niri.rs          workspaces (Niri IPC)
 src/battery.rs       battery
 src/system.rs        CPU and RAM
 src/network.rs       network

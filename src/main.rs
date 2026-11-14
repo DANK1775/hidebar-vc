@@ -5,6 +5,7 @@ mod event;
 mod hyprland;
 mod ipc;
 mod network;
+mod niri;
 mod system;
 
 use std::process::ExitCode;
@@ -16,7 +17,7 @@ use crate::ipc::Command;
 
 const USAGE: &str = "\
 uso:
-  hidebar daemon            inicia el daemon (exec-once en Hyprland)
+  hidebar daemon            inicia el daemon (exec-once en Hyprland, spawn-at-startup en Niri)
   hidebar show <módulo>     muestra unos segundos
   hidebar toggle <módulo>   fija/desfija (clock: abre/cierra el calendario)
 
@@ -59,7 +60,16 @@ fn run_daemon() -> ExitCode {
         let events = sender.clone();
         move |event| events.unbounded_send(Input::Event(event)).is_ok()
     };
-    hyprland::listen(emitter());
+    // El socket debe existir: una `NIRI_SOCKET` vieja no debe tapar a Hyprland.
+    if niri::socket_path().is_some_and(|path| path.exists()) {
+        niri::listen(emitter());
+    } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        hyprland::listen(emitter());
+    } else {
+        eprintln!(
+            "hidebar: ni NIRI_SOCKET ni HYPRLAND_INSTANCE_SIGNATURE definido; sin eventos de workspaces"
+        );
+    }
     battery::listen(emitter());
     system::listen(emitter());
     network::listen(emitter());
