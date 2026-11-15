@@ -3,6 +3,8 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Sin fuente de workspaces en Windows v1; se conserva para Linux.
+    #[cfg_attr(windows, allow(dead_code))]
     Workspaces(Workspaces),
     Battery(Battery),
     System(System),

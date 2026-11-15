@@ -16,7 +16,6 @@ pub(crate) struct WorkArea {
     pub left: i32,
     pub top: i32,
     pub width: u32,
-    pub height: u32,
     pub scale: f32,
 }
 
@@ -40,6 +39,7 @@ impl WorkArea {
 }
 
 pub(crate) fn primary() -> WorkArea {
+    // SAFETY: `MONITORINFO` con `cbSize`; el monitor es del sistema y el out es válido.
     let mut info: MONITORINFO = unsafe { zeroed() };
     info.cbSize = size_of::<MONITORINFO>() as u32;
 
@@ -59,7 +59,6 @@ pub(crate) fn primary() -> WorkArea {
         left: work.left,
         top: work.top,
         width: (work.right - work.left).max(1) as u32,
-        height: (work.bottom - work.top).max(1) as u32,
         scale: unsafe { GetDpiForSystem() } as f32 / 96.0,
     }
 }

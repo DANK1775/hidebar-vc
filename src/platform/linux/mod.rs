@@ -97,6 +97,7 @@ fn update(shell: &mut Shell, message: Message) -> Task<Message> {
 
 fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
     match message {
+        Message::Input(Input::Command(Command::Quit)) => return iced::exit(),
         Message::Input(input) => shell.state.handle(input),
         Message::Ui(message) => match message {
             UiMessage::Month(delta) => shell.state.shift_calendar(delta),
@@ -104,7 +105,7 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
             UiMessage::Close => shell.state.close_calendar(),
         },
         Message::Tick => shell.state.tick(Instant::now()),
-        Message::Frame => shell.state.frame(Instant::now()),
+        Message::Frame => shell.state.tick(Instant::now()),
         Message::Closed(id) => {
             // Si el compositor cerró una superficie, `sync` la vuelve a abrir si sigue haciendo falta.
             shell.strip.take_if(|strip| *strip == id);
@@ -286,6 +287,16 @@ pub(crate) fn run_daemon() -> ExitCode {
 
 pub(crate) fn send(command: Command) -> io::Result<String> {
     ipc::send(command)
+}
+
+pub(crate) fn install() -> ExitCode {
+    eprintln!("hidebar: install solo está implementado en Windows");
+    ExitCode::FAILURE
+}
+
+pub(crate) fn uninstall() -> ExitCode {
+    eprintln!("hidebar: uninstall solo está implementado en Windows");
+    ExitCode::FAILURE
 }
 
 /// Vulkan por defecto (ADR-0003): sin esto, wgpu enumera también GL y EGL carga todos los

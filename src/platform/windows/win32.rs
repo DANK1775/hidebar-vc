@@ -3,16 +3,26 @@
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND};
+use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
-    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetForegroundWindow, SetTimer,
-    SetWindowPos, SetWindowTextW, ShowWindow, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    CreateWindowExW, IDC_ARROW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW, SW_HIDE,
+    SetTimer, SetWindowTextW, ShowWindow, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const WM_APP_EVENT: u32 = 0x8000 + 1;
 pub(crate) const TIMER_ID: usize = 1;
+
+/// Handle de ventana que puede enviarse a los hilos de fuentes/IPC.
+/// `PostMessageW` es seguro desde cualquier hilo mientras la ventana exista.
+#[derive(Clone, Copy)]
+pub(crate) struct SendHwnd(pub HWND);
+
+// SAFETY: el handle solo se usa para `PostMessageW`; la ventana vive hasta que
+// termina el proceso.
+unsafe impl Send for SendHwnd {}
+unsafe impl Sync for SendHwnd {}
 
 pub(crate) const STRIP_EX_STYLE: u32 =
     WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
@@ -79,23 +89,6 @@ pub(crate) fn create_window(
     hwnd
 }
 
-pub(crate) fn show(hwnd: HWND, activate: bool) {
-    unsafe {
-        if activate {
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
-        } else {
-            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        }
-    }
-}
-
-pub(crate) fn hide(hwnd: HWND) {
-    unsafe {
-        ShowWindow(hwnd, SW_HIDE);
-    }
-}
-
 pub(crate) fn set_timer(hwnd: HWND, interval: Option<u32>) {
     unsafe {
         match interval {
@@ -109,22 +102,30 @@ pub(crate) fn set_timer(hwnd: HWND, interval: Option<u32>) {
     }
 }
 
-pub(crate) fn post_event(hwnd: HWND) {
+pub(crate) fn post_event(hwnd: SendHwnd) {
     unsafe {
-        PostMessageW(hwnd, WM_APP_EVENT, 0, 0);
+        PostMessageW(hwnd.0, WM_APP_EVENT, 0, 0);
     }
 }
 
-pub(crate) fn position_topmost(hwnd: HWND, x: i32, y: i32, width: u32, height: u32) {
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            x,
-            y,
-            width as i32,
-            height as i32,
-            SWP_NOACTIVATE,
-        );
+/// Si el proceso posee su propia consola (autoarranque, acceso directo),
+/// ocultarla. Lanzado desde una terminal, `GetConsoleProcessList` incluye al
+/// shell y no se toca. `HIDEBAR_FOREGROUND=1` la mantiene para depurar.
+pub(crate) fn hide_console_if_own() {
+    if std::env::var_os("HIDEBAR_FOREGROUND").is_some() {
+        return;
+    }
+
+    let mut processes = [0u32; 2];
+    let count = unsafe { GetConsoleProcessList(processes.as_mut_ptr(), processes.len() as u32) };
+    if count > 1 {
+        return;
+    }
+
+    let console = unsafe { GetConsoleWindow() };
+    if !console.is_null() {
+        unsafe {
+            ShowWindow(console, SW_HIDE);
+        }
     }
 }

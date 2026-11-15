@@ -10,6 +10,8 @@ pub enum Command {
     Show(Target),
     /// El módulo decide: fijar/desfijar, o abrir/cerrar su panel (reloj → calendario).
     Toggle(Target),
+    /// Cierra el daemon.
+    Quit,
 }
 
 /// Módulos de la franja, o todos a la vez.
@@ -39,6 +41,9 @@ impl FromStr for Command {
 
     fn from_str(line: &str) -> Result<Self, Self::Err> {
         let words: Vec<&str> = line.split_whitespace().collect();
+        if words.as_slice() == ["quit"] {
+            return Ok(Self::Quit);
+        }
         let verb: fn(Target) -> Self = match words.first() {
             Some(&"show") => Self::Show,
             Some(&"toggle") => Self::Toggle,
@@ -61,6 +66,7 @@ impl fmt::Display for Command {
         match self {
             Self::Show(target) => write!(f, "show {}", target.name()),
             Self::Toggle(target) => write!(f, "toggle {}", target.name()),
+            Self::Quit => f.write_str("quit"),
         }
     }
 }
@@ -77,6 +83,7 @@ mod tests {
             Ok(Command::Toggle(Target::Status))
         );
         assert_eq!("show all".parse(), Ok(Command::Show(Target::All)));
+        assert_eq!("quit".parse(), Ok(Command::Quit));
     }
 
     #[test]
@@ -88,6 +95,7 @@ mod tests {
         );
         assert!("hide clock".parse::<Command>().is_err());
         assert!("show workspaces now".parse::<Command>().is_err());
+        assert!("quit now".parse::<Command>().is_err());
         assert!("\n".parse::<Command>().is_err());
     }
 
@@ -98,5 +106,6 @@ mod tests {
                 assert_eq!(command.to_string().parse(), Ok(command));
             }
         }
+        assert_eq!(Command::Quit.to_string().parse(), Ok(Command::Quit));
     }
 }

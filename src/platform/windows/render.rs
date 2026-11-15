@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, ShowWindow, ULW_ALPHA, UpdateLayeredWindow,
 };
 
+use super::logging;
 use crate::state::Hidebar;
 use crate::ui;
 
@@ -69,7 +70,7 @@ impl LayeredSurface {
         self.hwnd
     }
 
-    pub(crate) fn render(&mut self, state: &Hidebar, surface: ui::Surface) {
+    pub(crate) fn render(&mut self, state: &Hidebar, surface: ui::Surface, cursor: mouse::Cursor) {
         let logical = Size::new(
             self.width as f32 / self.scale,
             self.height as f32 / self.scale,
@@ -87,12 +88,7 @@ impl LayeredSurface {
                 text_color: Color::WHITE,
             };
 
-            interface.draw(
-                &mut self.renderer,
-                &Theme::Dark,
-                &style,
-                mouse::Cursor::Unavailable,
-            );
+            interface.draw(&mut self.renderer, &Theme::Dark, &style, cursor);
             self.cache = interface.into_cache();
         }
 
@@ -108,11 +104,13 @@ impl LayeredSurface {
         );
 
         let source = self.pixmap.data();
+        // SAFETY: `pixels` apunta al DIB de width*height u32 creado en
+        // `create_dib` con estas mismas dimensiones; vive hasta `Drop`.
         let destination =
             unsafe { slice::from_raw_parts_mut(self.pixels, (self.width * self.height) as usize) };
 
         // tiny-skia: RGBA premultiplicado. DIB 32 bpp: BGRA premultiplicado.
-        for (pixel, output) in source.chunks_exact(4).zip(destination.iter_mut()) {
+        for (pixel, output) in source.as_chunks::<4>().0.iter().zip(destination.iter_mut()) {
             *output = (u32::from(pixel[3]) << 24)
                 | (u32::from(pixel[0]) << 16)
                 | (u32::from(pixel[1]) << 8)
@@ -156,6 +154,7 @@ impl LayeredSurface {
     }
 
     pub(crate) fn show(&self, activate: bool) {
+        // SAFETY: `hwnd` es una ventana layered viva; solo cambia visibilidad/foco.
         if activate {
             unsafe {
                 ShowWindow(self.hwnd, SW_SHOW);
@@ -191,6 +190,8 @@ impl LayeredSurface {
             return;
         }
 
+        // SAFETY: se restaura el bitmap original antes de borrar el DIB y el DC;
+        // ambos handles pertenecen a esta superficie y no se usan después.
         unsafe {
             SelectObject(self.mem_dc, self.old_bitmap);
             DeleteObject(self.dib);
@@ -235,6 +236,8 @@ impl LayeredSurface {
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
 
+        // SAFETY: `hwnd` es layered y está viva; `size` coincide con el DIB
+        // seleccionado en `mem_dc`; `position`, `source_point` y `blend` son locales.
         let updated = unsafe {
             UpdateLayeredWindow(
                 self.hwnd,
@@ -250,16 +253,17 @@ impl LayeredSurface {
         };
 
         if updated == 0 {
-            eprintln!(
+            logging::error(format!(
                 "hidebar: UpdateLayeredWindow falló: {}",
                 std::io::Error::last_os_error()
-            );
+            ));
         }
     }
 }
 
 impl Drop for LayeredSurface {
     fn drop(&mut self) {
+        // SAFETY: handles creados en `create_dib` y no liberados antes.
         unsafe {
             SelectObject(self.mem_dc, self.old_bitmap);
             DeleteObject(self.dib);
@@ -269,6 +273,8 @@ impl Drop for LayeredSurface {
 }
 
 fn create_dib(width: u32, height: u32) -> (HDC, HBITMAP, HGDIOBJ, *mut u32) {
+    // SAFETY: DC compatible con pantalla; el DIB se selecciona en él y ambos
+    // se liberan en `Drop`. `bits` apunta a width*height píxeles de 32 bpp.
     let mem_dc = unsafe { CreateCompatibleDC(null_mut()) };
     assert!(!mem_dc.is_null(), "CreateCompatibleDC");
 

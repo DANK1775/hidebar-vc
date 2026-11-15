@@ -1,3 +1,5 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
 mod calendar;
 mod command;
 mod event;
@@ -14,6 +16,8 @@ uso:
   hidebar daemon            inicia el daemon
   hidebar show <módulo>     muestra unos segundos
   hidebar toggle <módulo>   fija/desfija (clock: abre/cierra el calendario)
+  hidebar install           añade hidebar al inicio de sesión (Windows)
+  hidebar uninstall         lo quita (Windows)
 
 módulos: workspaces, clock, status (red, cpu, ram, silencio, batería), all";
 
@@ -21,6 +25,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("daemon") if args.len() == 1 => run_daemon(),
+        Some("install") if args.len() == 1 => platform::install(),
+        Some("uninstall") if args.len() == 1 => platform::uninstall(),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             ExitCode::SUCCESS

@@ -9,6 +9,6 @@ pub(crate) mod windows;
 compile_error!("hidebar solo soporta Linux y Windows");
 
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{run_daemon, send};
+pub(crate) use linux::{install, run_daemon, send, uninstall};
 #[cfg(windows)]
-pub(crate) use windows::{run_daemon, send};
+pub(crate) use windows::{install, run_daemon, send, uninstall};

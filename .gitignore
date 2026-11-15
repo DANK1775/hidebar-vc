@@ -5,3 +5,6 @@ __pycache__/
 /plan/
 /AGENT.md
 /CLAUDE.md
+
+# Logs de compilación/pruebas
+*.log

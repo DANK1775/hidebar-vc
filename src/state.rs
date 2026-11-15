@@ -333,6 +333,8 @@ impl Hidebar {
 
     pub(crate) fn handle(&mut self, input: Input) {
         match input {
+            // Salir es decisión del shell, no del estado.
+            Input::Command(Command::Quit) => {}
             Input::Command(Command::Show(target)) => {
                 for module in modules(target) {
                     self.show(*module);
@@ -353,11 +355,6 @@ impl Hidebar {
         self.now = now();
         self.frame = instant;
         self.expire(instant);
-    }
-
-    /// Nuevo cuadro del pulso.
-    pub(crate) fn frame(&mut self, instant: Instant) {
-        self.frame = instant;
     }
 
     /// La presentación decide qué eventos merecen aparecer.
@@ -487,7 +484,7 @@ mod tests {
     /// Hace vencer todo lo momentáneo.
     fn expire_all(state: &mut Hidebar) {
         state.expire(Instant::now() + Duration::from_secs(60));
-        state.frame(Instant::now());
+        state.frame = Instant::now();
     }
 
     #[test]
