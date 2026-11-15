@@ -4,17 +4,15 @@ use chrono::Datelike;
 use std::sync::LazyLock;
 
 use iced::widget::{Column, Row, button, column, container, row, space, svg, text};
-use iced::{Alignment, Border, Color, Element, Length, Padding, window};
-use iced_layershell::reexport::{
-    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
-};
+use iced::{Alignment, Border, Color, Element, Length, Padding};
 
-use super::calendar::{self, WEEKDAYS_SHORT};
-use super::{Hidebar, Message, Module, NAMESPACE, Notice, Severity, severity};
+use super::{Message, Surface};
+use crate::calendar::{self, WEEKDAYS_SHORT};
 use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
+use crate::state::{Hidebar, Module, Notice, Severity, severity};
 
 /// Alto de la superficie de la franja, en píxeles lógicos.
-const STRIP_HEIGHT: u32 = 34;
+pub(crate) const STRIP_HEIGHT: u32 = 34;
 const PILL_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.6);
 /// Pastillas: alto, separación del borde superior y de los laterales, relleno horizontal.
 const PILL_HEIGHT: f32 = 26.0;
@@ -51,49 +49,17 @@ fn icon(bytes: &'static [u8]) -> svg::Handle {
 const CELL: f32 = 28.0;
 const CALENDAR_PADDING: f32 = 12.0;
 const CALENDAR_HEADER: f32 = 28.0;
-const CALENDAR_GAP: i32 = 4;
+pub(crate) const CALENDAR_GAP: i32 = 4;
 const CALENDAR_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.8);
 
-pub fn view(state: &Hidebar, id: window::Id) -> Element<'_, Message> {
-    if state.strip == Some(id) {
-        strip_view(state)
-    } else if state.calendar_surface == Some(id) {
-        calendar_view(state)
-    } else {
-        space().into()
+pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
+    match surface {
+        Surface::Strip => strip_view(state),
+        Surface::Calendar => calendar_view(state),
     }
 }
 
-/// Franja superior a lo ancho de la pantalla activa, sin reservar espacio y sin recibir entrada.
-pub fn strip_settings() -> NewLayerShellSettings {
-    NewLayerShellSettings {
-        size: Some((0, STRIP_HEIGHT)),
-        layer: Layer::Overlay,
-        anchor: Anchor::Top | Anchor::Left | Anchor::Right,
-        // -1: no reserva espacio ni se desplaza por la zona exclusiva de otras barras.
-        exclusive_zone: Some(-1),
-        margin: None,
-        keyboard_interactivity: KeyboardInteractivity::None,
-        output_option: OutputOption::Active,
-        events_transparent: true,
-        namespace: Some(NAMESPACE.to_owned()),
-    }
-}
-
-/// Debajo del reloj, centrado (anclado sólo arriba). Recibe cursor y teclado.
-pub fn calendar_settings() -> NewLayerShellSettings {
-    let (width, height) = calendar_size();
-    NewLayerShellSettings {
-        size: Some((width, height)),
-        anchor: Anchor::Top,
-        margin: Some((STRIP_HEIGHT as i32 + CALENDAR_GAP, 0, 0, 0)),
-        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-        events_transparent: false,
-        ..strip_settings()
-    }
-}
-
-fn calendar_size() -> (u32, u32) {
+pub(crate) fn calendar_size() -> (u32, u32) {
     let width = 7.0 * CELL + 2.0 * CALENDAR_PADDING;
     // Título, fila de días de la semana y las semanas.
     let height = CALENDAR_HEADER + CELL * (1 + calendar::WEEKS) as f32 + 2.0 * CALENDAR_PADDING;
@@ -346,13 +312,13 @@ fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
             .width(Length::Fill)
             .center(),
     )
-    .on_press(Message::CalendarToday)
+    .on_press(Message::Today)
     .width(Length::Fill)
     .style(flat_button);
     let header = row![
-        nav_button("‹", Message::CalendarMonth(-1)),
+        nav_button("‹", Message::Month(-1)),
         title,
-        nav_button("›", Message::CalendarMonth(1)),
+        nav_button("›", Message::Month(1)),
     ]
     .height(CALENDAR_HEADER)
     .align_y(Alignment::Center);

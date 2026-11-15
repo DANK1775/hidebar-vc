@@ -6,7 +6,39 @@ license = "MIT"
 
 [dependencies]
 chrono = "0.4.45"
-iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "web-colors", "tokio", "wayland", "svg"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "tokio",
+    "wayland",
+    "svg",
+] }
 iced_layershell = "0.19.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "svg",
+] }
+iced_runtime = "0.14.0"
+iced_tiny_skia = { version = "0.14.1", default-features = false, features = ["svg"] }
+tiny-skia = "0.11.4"
+interprocess = "2.4.8"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
