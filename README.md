@@ -142,7 +142,9 @@ running, it says so and exits with an error.
 ## Windows 11
 
 The same strip and calendar, without a compositor: two layered Win32 windows rendered with
-`iced_tiny_skia` and presented with `UpdateLayeredWindow`. The gaps between pills are fully
+`iced_tiny_skia` and presented with `UpdateLayeredWindow`.
+
+![hidebar on Windows 11: clock, status and calendar over a dark desktop](docs/windows.png) The gaps between pills are fully
 transparent and click-through, the strip is always on top, does not appear in the taskbar or
 Alt+Tab, never steals focus, and hides itself while a game or presentation is fullscreen.
 
