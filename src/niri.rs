@@ -15,8 +15,10 @@ const RETRY: Duration = Duration::from_secs(2);
 struct NiriWorkspace {
     id: u64,
     idx: u8,
+    name: Option<String>,
     output: Option<String>,
     is_focused: bool,
+    active_window_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -31,11 +33,19 @@ struct WorkspaceActivated {
 }
 
 #[derive(Deserialize)]
+struct WorkspaceActiveWindowChanged {
+    workspace_id: u64,
+    active_window_id: Option<u64>,
+}
+
+#[derive(Deserialize)]
 struct NiriEvent {
     #[serde(rename = "WorkspacesChanged")]
     workspaces_changed: Option<WorkspacesChanged>,
     #[serde(rename = "WorkspaceActivated")]
     workspace_activated: Option<WorkspaceActivated>,
+    #[serde(rename = "WorkspaceActiveWindowChanged")]
+    workspace_active_window_changed: Option<WorkspaceActiveWindowChanged>,
 }
 
 /// Escucha Niri en un hilo propio y emite el estado de los workspaces. Sin `NIRI_SOCKET` no hace nada.
@@ -63,6 +73,12 @@ enum Stop {
 
 pub fn socket_path() -> Option<PathBuf> {
     std::env::var_os("NIRI_SOCKET").map(PathBuf::from)
+}
+
+/// Niri responde en `NIRI_SOCKET`. Que el archivo exista no basta: una sesión cerrada en falso deja el socket
+/// y la variable puede heredarse (entorno de systemd), y entonces taparía a Hyprland.
+pub fn available() -> bool {
+    socket_path().is_some_and(|path| UnixStream::connect(path).is_ok())
 }
 
 fn run(path: &Path, emit: &impl Fn(Event) -> bool) -> io::Result<Stop> {
@@ -95,6 +111,12 @@ fn run(path: &Path, emit: &impl Fn(Event) -> bool) -> io::Result<Stop> {
                 continue;
             };
             focus(workspaces, activated.id);
+        } else if let Some(changed) = event.workspace_active_window_changed {
+            // Abrir o cerrar ventanas no siempre reenvía la lista: decide qué workspaces están vacíos.
+            let Some(workspaces) = &mut last else {
+                continue;
+            };
+            set_active_window(workspaces, changed.workspace_id, changed.active_window_id);
         } else {
             continue;
         }
@@ -114,13 +136,24 @@ fn focus(workspaces: &mut [NiriWorkspace], id: u64) {
     }
 }
 
+fn set_active_window(workspaces: &mut [NiriWorkspace], id: u64, window: Option<u64>) {
+    if let Some(workspace) = workspaces.iter_mut().find(|workspace| workspace.id == id) {
+        workspace.active_window_id = window;
+    }
+}
+
 /// Reduce la lista de workspaces a lo que importa: los de la salida enfocada, ordenados por índice.
+/// Niri siempre deja un workspace vacío al final de cada salida: los vacíos sin nombre se omiten salvo el
+/// enfocado, como en Hyprland, donde un workspace vacío deja de existir.
 /// `None` mientras ningún workspace esté enfocado (estado transitorio): no hay nada que mostrar.
 fn workspaces_from_list(workspaces: &[NiriWorkspace]) -> Option<Workspaces> {
     let focused = workspaces.iter().find(|workspace| workspace.is_focused)?;
     let mut ids: Vec<i32> = workspaces
         .iter()
         .filter(|workspace| workspace.output == focused.output)
+        .filter(|workspace| {
+            workspace.is_focused || workspace.active_window_id.is_some() || workspace.name.is_some()
+        })
         .map(|workspace| i32::from(workspace.idx))
         .collect();
     ids.sort_unstable();
@@ -157,14 +190,16 @@ mod tests {
         NiriWorkspace {
             id,
             idx,
+            name: None,
             output: Some(output.to_owned()),
             is_focused,
+            active_window_id: Some(id * 10),
         }
     }
 
     #[test]
     fn parses_event_line() {
-        let line = r#"{"WorkspacesChanged":{"workspaces":[{"id":3,"idx":3,"name":null,"output":"HDMI-A-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},{"id":1,"idx":1,"name":"main","output":"HDMI-A-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":11}]}}"#;
+        let line = r#"{"WorkspacesChanged":{"workspaces":[{"id":3,"idx":3,"name":null,"output":"HDMI-A-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":12},{"id":1,"idx":1,"name":"main","output":"HDMI-A-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":11}]}}"#;
         assert_eq!(
             parse_workspaces_event(line).unwrap(),
             Workspaces {
@@ -206,6 +241,30 @@ mod tests {
                 active: 2
             }
         );
+    }
+
+    #[test]
+    fn hides_empty_unnamed_workspaces_except_the_focused_one() {
+        let line = r#"{"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":null,"output":"eDP-1","is_focused":false,"active_window_id":5},{"id":2,"idx":2,"name":null,"output":"eDP-1","is_focused":true,"active_window_id":null},{"id":3,"idx":3,"name":"chat","output":"eDP-1","is_focused":false,"active_window_id":null},{"id":4,"idx":4,"name":null,"output":"eDP-1","is_focused":false,"active_window_id":null}]}}"#;
+        assert_eq!(
+            parse_workspaces_event(line).unwrap(),
+            Workspaces {
+                ids: vec![1, 2, 3],
+                active: 2
+            }
+        );
+    }
+
+    #[test]
+    fn active_window_changes_update_emptiness() {
+        let mut workspaces = vec![
+            workspace(1, 1, "eDP-1", true),
+            workspace(2, 2, "eDP-1", false),
+        ];
+        set_active_window(&mut workspaces, 2, None);
+        assert_eq!(workspaces_from_list(&workspaces).unwrap().ids, vec![1]);
+        set_active_window(&mut workspaces, 2, Some(7));
+        assert_eq!(workspaces_from_list(&workspaces).unwrap().ids, vec![1, 2]);
     }
 
     #[test]

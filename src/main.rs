@@ -60,8 +60,8 @@ fn run_daemon() -> ExitCode {
         let events = sender.clone();
         move |event| events.unbounded_send(Input::Event(event)).is_ok()
     };
-    // El socket debe existir: una `NIRI_SOCKET` vieja no debe tapar a Hyprland.
-    if niri::socket_path().is_some_and(|path| path.exists()) {
+    // Niri debe responder: una `NIRI_SOCKET` vieja no debe tapar a Hyprland.
+    if niri::available() {
         niri::listen(emitter());
     } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         hyprland::listen(emitter());
