@@ -24,10 +24,22 @@ Each module is drawn in its own semi-transparent black pill near the top edge of
 |--------------|-------------------|--------------------------------------------|---------------------------------------------|
 | `workspaces` | top left          | one dot per workspace; the active one filled | you switch workspace (1.5 s)              |
 | `clock`      | top center        | time and date                              | —                                           |
-| `status`     | top right         | network · cpu · ram · mute · battery       | the network changes, you mute/unmute, or you plug/unplug the charger (3 s) |
+| `status`     | top right         | network · cpu · ram · mute · battery       | — (see notices)                             |
 
-There is also an **indicator** in the top-right corner: a dot that pulses while the battery is low (≤ 25%, white;
-≤ 10%, orange-red) and discharging. It hides while `status` is visible, since the battery pulses there too.
+### Notices
+
+When something changes, hidebar does not open the whole `status` pill: it shows **only the icon of what changed**,
+in a small pill in the same top-right spot, for 3 s.
+
+- **Network:** the network icon, when connectivity changes.
+- **Audio:** a crossed-out speaker when the output goes silent, a regular speaker when sound comes back.
+- **Charger:** the battery icon when you plug in (yellow) or unplug (white) the charger.
+- **Low battery:** the battery icon, pulsing, for as long as the battery is low (≤ 25%, white; ≤ 10%,
+  orange-red) and discharging.
+
+Simultaneous notices stack in the same pill, in `status` order (network · mute · battery); repeating one restarts
+its timer. While `status` is visible (`show status` or pinned) there are no notices, since it already contains
+everything.
 
 ### `status` in detail
 
@@ -53,7 +65,7 @@ The interface (dates, CLI messages) is in Spanish.
 
 - Hyprland or Niri (uses `wlr-layer-shell`; workspaces come from the compositor's IPC).
 - Rust 1.88 or later (2024 edition).
-- Optional: `pactl` for the mute indicator.
+- Optional: `pactl` for the mute icon and audio notices.
 - Vulkan drivers for your GPU (e.g. `vulkan-radeon`, `vulkan-intel`, `nvidia-utils`). The daemon uses Vulkan by
   default, which keeps memory low (~120 MB RSS instead of ~275 MB when GL/EGL loads every installed driver).
   Set `WGPU_BACKEND=gl` to override it.
@@ -187,7 +199,7 @@ src/system.rs        CPU and RAM
 src/network.rs       network
 src/audio.rs         mute (pactl)
 src/app.rs           daemon state and surfaces
-src/app/view.rs      drawing: pills, indicator, calendar
+src/app/view.rs      drawing: pills, notices, calendar
 src/app/calendar.rs  Spanish dates and month grid
 assets/icons/        custom SVG icons, embedded in the binary
 ```

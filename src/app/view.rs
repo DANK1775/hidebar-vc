@@ -1,4 +1,4 @@
-//! Dibujo de las superficies: pastillas de la franja, indicador y calendario.
+//! Dibujo de las superficies: pastillas de la franja (módulos y avisos) y calendario.
 
 use chrono::Datelike;
 use std::sync::LazyLock;
@@ -10,7 +10,7 @@ use iced_layershell::reexport::{
 };
 
 use super::calendar::{self, WEEKDAYS_SHORT};
-use super::{Hidebar, Message, Module, NAMESPACE, Severity, severity};
+use super::{Hidebar, Message, Module, NAMESPACE, Notice, Severity, severity};
 use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
 
 /// Alto de la superficie de la franja, en píxeles lógicos.
@@ -40,16 +40,12 @@ static ICON_RAM: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/ram.svg")));
 static ICON_MUTED: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/muted.svg")));
+static ICON_SPEAKER: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/speaker.svg")));
 
 fn icon(bytes: &'static [u8]) -> svg::Handle {
     svg::Handle::from_memory(bytes)
 }
-
-/// Indicador: superficie cuadrada con un punto central.
-const INDICATOR_SIZE: u32 = 24;
-/// Margen (arriba, derecha, abajo, izquierda); alinea el punto con las pastillas.
-const INDICATOR_MARGIN: (i32, i32, i32, i32) = (7, 12, 0, 0);
-const INDICATOR_DOT: f32 = 8.0;
 
 /// Calendario: celdas, relleno y separación bajo la franja.
 const CELL: f32 = 28.0;
@@ -61,8 +57,6 @@ const CALENDAR_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.8);
 pub fn view(state: &Hidebar, id: window::Id) -> Element<'_, Message> {
     if state.strip == Some(id) {
         strip_view(state)
-    } else if state.indicator == Some(id) {
-        indicator_view(fade(severity_color(state.severity()), state.pulse()))
     } else if state.calendar_surface == Some(id) {
         calendar_view(state)
     } else {
@@ -83,15 +77,6 @@ pub fn strip_settings() -> NewLayerShellSettings {
         output_option: OutputOption::Active,
         events_transparent: true,
         namespace: Some(NAMESPACE.to_owned()),
-    }
-}
-
-pub fn indicator_settings() -> NewLayerShellSettings {
-    NewLayerShellSettings {
-        size: Some((INDICATOR_SIZE, INDICATOR_SIZE)),
-        anchor: Anchor::Top | Anchor::Right,
-        margin: Some(INDICATOR_MARGIN),
-        ..strip_settings()
     }
 }
 
@@ -125,7 +110,15 @@ fn strip_view(state: &Hidebar) -> Element<'_, Message> {
         state.workspaces.as_ref().map(workspaces_view),
     );
     let center = module(Module::Clock, Some(clock_view(state)));
-    let right = module(Module::Status, Some(status_view(state)));
+    // A la derecha, `status` completo o, si está oculto, los avisos activos.
+    let notices = state.active_notices();
+    let right = if state.visible(Module::Status) {
+        pill(status_view(state))
+    } else if !notices.is_empty() {
+        pill(notices_view(state, &notices))
+    } else {
+        space().into()
+    };
 
     // Los laterales ocupan el mismo ancho, así el centro queda centrado.
     // Sólo las pastillas tienen fondo; el resto de la superficie es transparente.
@@ -201,6 +194,32 @@ fn status_view(state: &Hidebar) -> Element<'static, Message> {
     line.into()
 }
 
+/// Avisos juntos en una pastilla, con el mismo aspecto que en `status`. La batería, sólo el icono.
+fn notices_view(state: &Hidebar, notices: &[Notice]) -> Element<'static, Message> {
+    let items = notices.iter().filter_map(|notice| match notice {
+        Notice::Network => state.network.map(network_view),
+        Notice::Audio => state.audio.map(audio_view),
+        Notice::Battery => state
+            .battery
+            .as_ref()
+            .map(|battery| battery_icon(battery, state.pulse())),
+    });
+    Row::with_children(items)
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// Altavoz tachado sin sonido; altavoz normal con sonido.
+fn audio_view(audio: Audio) -> Element<'static, Message> {
+    let icon = if audio.silent() {
+        &ICON_MUTED
+    } else {
+        &ICON_SPEAKER
+    };
+    tinted(icon, Color::WHITE)
+}
+
 /// Wifi blanco con internet, naranja sin salida, naranja-rojo tachado sin red.
 fn network_view(network: Network) -> Element<'static, Message> {
     let (icon, color) = match network {
@@ -247,21 +266,38 @@ fn circle(size: f32, color: Color, filled: bool) -> Element<'static, Message> {
         .into()
 }
 
-/// «cargando 80 %» + icono. Mismos estados que el indicador: amarillo cargando,
+/// «cargando 80 %» + icono. Mismos estados que el aviso de batería: amarillo cargando,
 /// blanco o naranja-rojo pulsando con batería baja o crítica.
 fn battery_view(battery: &Battery, pulse: f32) -> Element<'static, Message> {
+    let color = battery_shade(battery, pulse);
+    let mut line = Row::new().spacing(6).align_y(Alignment::Center);
+    if battery.status == BatteryStatus::Charging {
+        line = line.push(text("cargando").size(11).color(CHARGING_COLOR));
+    }
+    line.push(text(format!("{} %", battery.percent)).size(12).color(color))
+        .push(battery_icon(battery, pulse))
+        .into()
+}
+
+/// Color de la batería con el pulso aplicado si está baja.
+fn battery_shade(battery: &Battery, pulse: f32) -> Color {
+    let color = battery_color(battery);
+    if severity(battery) == Severity::Normal {
+        color
+    } else {
+        fade(color, pulse)
+    }
+}
+
+/// Cuerpo de la pila con el relleno según el nivel, y el borne.
+fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
     const BODY_WIDTH: f32 = 20.0;
     const BODY_HEIGHT: f32 = 10.0;
     const BORDER: f32 = 1.2;
     const PADDING: f32 = 1.5;
     let inner = BODY_WIDTH - 2.0 * (BORDER + PADDING);
     let level = inner * f32::from(battery.percent) / 100.0;
-    let color = battery_color(battery);
-    let color = if severity(battery) == Severity::Normal {
-        color
-    } else {
-        fade(color, pulse)
-    };
+    let color = battery_shade(battery, pulse);
 
     let fill = container(space())
         .width(level)
@@ -292,25 +328,7 @@ fn battery_view(battery: &Battery, pulse: f32) -> Element<'static, Message> {
             ..Default::default()
         });
 
-    let mut line = Row::new().spacing(6).align_y(Alignment::Center);
-    if battery.status == BatteryStatus::Charging {
-        line = line.push(text("cargando").size(11).color(CHARGING_COLOR));
-    }
-    line.push(text(format!("{} %", battery.percent)).size(12).color(color))
-        .push(row![body, nub].align_y(Alignment::Center))
-        .into()
-}
-
-/// Punto del indicador, ya con el color del pulso, sobre un círculo con el fondo de las pastillas.
-fn indicator_view(color: Color) -> Element<'static, Message> {
-    container(circle(INDICATOR_DOT, color, true))
-        .center(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(PILL_BACKGROUND.into()),
-            border: Border::default().rounded(INDICATOR_SIZE as f32 / 2.0),
-            ..Default::default()
-        })
-        .into()
+    row![body, nub].align_y(Alignment::Center).into()
 }
 
 /// ‹ mes año ›, encabezados lu–do y la grilla; hoy resaltado.

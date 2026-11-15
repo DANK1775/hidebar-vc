@@ -2,11 +2,12 @@
 //!
 //! - **Franja** superior, click-through: una pastilla por módulo visible
 //!   (`workspaces` a la izquierda, `clock` al centro, `status` a la derecha).
-//! - **Indicador**, click-through: punto que pulsa mientras la batería está baja y `status` no se ve.
+//!   Con `status` oculto, su lugar lo ocupan los avisos (ADR-0004): sólo los elementos que cambiaron.
 //! - **Calendario**, interactivo: se abre con `toggle clock`, debajo del reloj.
 //!
-//! Cada módulo está oculto, momentáneo (con vencimiento) o fijado. `sync` abre y cierra las superficies
-//! según ese estado después de cada mensaje.
+//! Cada módulo está oculto, momentáneo (con vencimiento) o fijado; cada aviso, inactivo o con vencimiento
+//! (la batería baja, además, mientras dure). `sync` abre y cierra las superficies según ese estado después de
+//! cada mensaje.
 
 mod calendar;
 mod view;
@@ -30,6 +31,8 @@ const NAMESPACE: &str = "hidebar";
 const WORKSPACES_DURATION: Duration = Duration::from_millis(1500);
 const CLOCK_DURATION: Duration = Duration::from_secs(3);
 const STATUS_DURATION: Duration = Duration::from_secs(3);
+/// Tiempo visible de un aviso; repetir el mismo aviso lo reinicia.
+const NOTICE_DURATION: Duration = Duration::from_secs(3);
 /// Revisión de vencimientos mientras hay algo momentáneo.
 const TICK: Duration = Duration::from_millis(250);
 /// Refresco de la hora con el reloj fijado y nada momentáneo.
@@ -70,6 +73,20 @@ impl Module {
     }
 }
 
+/// Aviso: un elemento de `status` mostrado solo, porque cambió (ADR-0004). En el orden de `status`.
+/// Para agregar uno: una variante aquí y en `NOTICES`, su regla en `on_event` y su dibujo en `view`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Notice {
+    /// Cambió la conectividad.
+    Network,
+    /// Pasó de sonido a silencio o al revés.
+    Audio,
+    /// Se conectó o desconectó el cargador; también, sin vencimiento, la batería baja.
+    Battery,
+}
+
+const NOTICES: [Notice; 3] = [Notice::Network, Notice::Audio, Notice::Battery];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Visibility {
     Hidden,
@@ -96,6 +113,8 @@ struct Calendar {
 
 struct Hidebar {
     visibility: [Visibility; 3],
+    /// Vencimiento de cada aviso momentáneo, por `Notice`.
+    notices: [Option<Instant>; 3],
     /// Últimos datos conocidos; `None` hasta el primer evento de cada fuente.
     workspaces: Option<Workspaces>,
     battery: Option<Battery>,
@@ -105,9 +124,8 @@ struct Hidebar {
     calendar: Option<Calendar>,
     /// Superficies abiertas.
     strip: Option<window::Id>,
-    indicator: Option<window::Id>,
     calendar_surface: Option<window::Id>,
-    /// Origen común del pulso (indicador e icono van en fase) y último cuadro.
+    /// Origen del pulso de batería baja y último cuadro.
     pulse_origin: Instant,
     frame: Instant,
     now: Now,
@@ -124,6 +142,7 @@ impl Hidebar {
     fn new() -> Self {
         Self {
             visibility: [Visibility::Hidden; 3],
+            notices: [None; 3],
             workspaces: None,
             battery: None,
             system: None,
@@ -131,7 +150,6 @@ impl Hidebar {
             audio: None,
             calendar: None,
             strip: None,
-            indicator: None,
             calendar_surface: None,
             pulse_origin: Instant::now(),
             frame: Instant::now(),
@@ -239,6 +257,40 @@ impl Hidebar {
                 *visibility = Visibility::Hidden;
             }
         }
+        for notice in &mut self.notices {
+            notice.take_if(|until| *until <= instant);
+        }
+    }
+
+    /// Muestra un aviso un momento (o reinicia su tiempo si ya estaba). Con `status` visible el cambio ya
+    /// se ve ahí: no se registra, para que no aparezca tarde al ocultarse `status`.
+    fn notify(&mut self, notice: Notice) {
+        if !self.visible(Module::Status) {
+            self.notices[notice as usize] = Some(Instant::now() + NOTICE_DURATION);
+        }
+    }
+
+    /// Avisos a dibujar, en orden. Ninguno con `status` visible: la pastilla completa ya los contiene.
+    fn active_notices(&self) -> Vec<Notice> {
+        if self.visible(Module::Status) {
+            return Vec::new();
+        }
+        NOTICES
+            .into_iter()
+            .filter(|notice| {
+                self.notices[*notice as usize].is_some()
+                    || (*notice == Notice::Battery && self.severity() != Severity::Normal)
+            })
+            .filter(|notice| self.has_reading(*notice))
+            .collect()
+    }
+
+    fn has_reading(&self, notice: Notice) -> bool {
+        match notice {
+            Notice::Network => self.network.is_some(),
+            Notice::Audio => self.audio.is_some(),
+            Notice::Battery => self.battery.is_some(),
+        }
     }
 
     fn severity(&self) -> Severity {
@@ -250,12 +302,9 @@ impl Hidebar {
         pulse_alpha(self.frame.saturating_duration_since(self.pulse_origin))
     }
 
-    /// Hay algo pulsando en pantalla: el indicador, o la batería baja dentro de `status`.
+    /// Hay algo pulsando en pantalla: con batería baja, su icono está en `status` o en los avisos.
     fn pulsing(&self) -> bool {
-        self.indicator.is_some()
-            || (self.strip.is_some()
-                && self.visible(Module::Status)
-                && self.severity() != Severity::Normal)
+        self.strip.is_some() && self.severity() != Severity::Normal
     }
 }
 
@@ -332,7 +381,6 @@ fn handle(state: &mut Hidebar, message: Message) -> Task<Message> {
         Message::Closed(id) => {
             // Si el compositor cerró una superficie, `sync` la vuelve a abrir si sigue haciendo falta.
             state.strip.take_if(|strip| *strip == id);
-            state.indicator.take_if(|indicator| *indicator == id);
             if state
                 .calendar_surface
                 .take_if(|surface| *surface == id)
@@ -395,14 +443,14 @@ fn on_event(state: &mut Hidebar, event: Event) {
             }
         }
         Event::Battery(battery) => {
-            // Conectar o desconectar el cargador se muestra; el nivel bajo lo cubre el indicador.
+            // Conectar o desconectar el cargador se avisa; el nivel bajo se avisa mientras dure.
             let plug_changed = state
                 .battery
                 .as_ref()
                 .is_some_and(|old| old.plugged() != battery.plugged());
             state.battery = Some(battery);
             if plug_changed {
-                state.show(Module::Status);
+                state.notify(Notice::Battery);
             }
         }
         Event::System(system) => state.system = Some(system),
@@ -410,7 +458,7 @@ fn on_event(state: &mut Hidebar, event: Event) {
             let changed = state.network.is_some_and(|old| old != network);
             state.network = Some(network);
             if changed {
-                state.show(Module::Status);
+                state.notify(Notice::Network);
             }
         }
         Event::Audio(audio) => {
@@ -420,7 +468,7 @@ fn on_event(state: &mut Hidebar, event: Event) {
                 .is_some_and(|old| old.silent() != audio.silent());
             state.audio = Some(audio);
             if changed {
-                state.show(Module::Status);
+                state.notify(Notice::Audio);
             }
         }
     }
@@ -428,12 +476,11 @@ fn on_event(state: &mut Hidebar, event: Event) {
 
 /// Abre y cierra las superficies según el estado.
 fn sync(state: &mut Hidebar) -> Task<Message> {
-    let strip = MODULES.iter().any(|module| state.visible(*module));
-    let indicator = state.severity() != Severity::Normal && !state.visible(Module::Status);
+    let strip =
+        MODULES.iter().any(|module| state.visible(*module)) || !state.active_notices().is_empty();
     let calendar = state.calendar.is_some();
     Task::batch([
         surface(&mut state.strip, strip, view::strip_settings),
-        surface(&mut state.indicator, indicator, view::indicator_settings),
         surface(
             &mut state.calendar_surface,
             calendar,
@@ -469,7 +516,8 @@ fn subscription(state: &Hidebar) -> Subscription<Message> {
     let momentary = state
         .visibility
         .iter()
-        .any(|visibility| matches!(visibility, Visibility::Until(_)));
+        .any(|visibility| matches!(visibility, Visibility::Until(_)))
+        || state.notices.iter().any(Option::is_some);
     if momentary {
         subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
     } else if state.visible(Module::Clock) {
@@ -631,6 +679,7 @@ mod tests {
         );
         let _ = update(&mut state, input(Event::Network(Network::NoInternet)));
         assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
+        assert!(state.active_notices().is_empty(), "fijado: sin avisos");
         let _ = update(&mut state, toggle(Target::Status));
         assert!(!state.visible(Module::Status) && state.strip.is_none());
     }
@@ -655,34 +704,103 @@ mod tests {
     }
 
     #[test]
-    fn network_and_charger_changes_show_status() {
+    fn network_and_charger_changes_notify_without_status() {
         let mut state = ready();
         let _ = update(&mut state, input(Event::Network(Network::Online)));
-        assert!(!state.visible(Module::Status), "sin cambio");
+        assert!(state.active_notices().is_empty(), "sin cambio");
         let _ = update(&mut state, input(Event::Network(Network::Offline)));
-        assert!(state.visible(Module::Status));
+        assert_eq!(state.active_notices(), [Notice::Network]);
+        assert!(!state.visible(Module::Status) && state.strip.is_some());
         expire_all(&mut state);
+        assert!(state.strip.is_none());
         let _ = update(&mut state, battery_event(79, BatteryStatus::Discharging));
-        assert!(!state.visible(Module::Status), "cambio de nivel");
+        assert!(state.active_notices().is_empty(), "cambio de nivel");
         let _ = update(&mut state, battery_event(79, BatteryStatus::Charging));
-        assert!(state.visible(Module::Status));
+        assert_eq!(state.active_notices(), [Notice::Battery]);
     }
 
     #[test]
-    fn muting_shows_status_but_volume_changes_do_not() {
+    fn muting_notifies_but_volume_changes_do_not() {
         let audio = |muted, volume| input(Event::Audio(Audio { muted, volume }));
         let mut state = ready();
         let _ = update(&mut state, audio(false, 50));
-        assert!(!state.visible(Module::Status), "primera lectura");
+        assert!(state.active_notices().is_empty(), "primera lectura");
         let _ = update(&mut state, audio(false, 70));
-        assert!(!state.visible(Module::Status), "cambio de volumen");
+        assert!(state.active_notices().is_empty(), "cambio de volumen");
         let _ = update(&mut state, audio(true, 70));
-        assert!(state.visible(Module::Status), "silenciado");
+        assert_eq!(state.active_notices(), [Notice::Audio], "silenciado");
         expire_all(&mut state);
         let _ = update(&mut state, audio(true, 0));
-        assert!(!state.visible(Module::Status), "sigue sin oírse");
+        assert!(state.active_notices().is_empty(), "sigue sin oírse");
         let _ = update(&mut state, audio(false, 30));
-        assert!(state.visible(Module::Status), "vuelve el sonido");
+        assert_eq!(state.active_notices(), [Notice::Audio], "vuelve el sonido");
+    }
+
+    #[test]
+    fn notices_accumulate_in_status_order_and_yield_to_status() {
+        let mut state = ready();
+        let _ = update(
+            &mut state,
+            input(Event::Audio(Audio {
+                muted: false,
+                volume: 50,
+            })),
+        );
+        let _ = update(&mut state, battery_event(80, BatteryStatus::Charging));
+        let _ = update(
+            &mut state,
+            input(Event::Audio(Audio {
+                muted: true,
+                volume: 50,
+            })),
+        );
+        let _ = update(&mut state, input(Event::Network(Network::NoInternet)));
+        assert_eq!(
+            state.active_notices(),
+            [Notice::Network, Notice::Audio, Notice::Battery]
+        );
+        let _ = update(&mut state, input(Event::Network(Network::Online)));
+        assert_eq!(state.active_notices().len(), 3, "repetir no duplica");
+
+        let _ = update(&mut state, show(Target::Status));
+        assert!(
+            state.active_notices().is_empty(),
+            "status completo los cubre"
+        );
+        expire_all(&mut state);
+        assert!(state.active_notices().is_empty() && state.strip.is_none());
+    }
+
+    #[test]
+    fn low_battery_notice_persists_and_yields_only_to_status() {
+        let mut state = ready();
+        let _ = update(&mut state, battery_event(20, BatteryStatus::Discharging));
+        assert_eq!(state.active_notices(), [Notice::Battery]);
+        assert!(state.strip.is_some() && state.pulsing());
+        expire_all(&mut state);
+        assert_eq!(state.active_notices(), [Notice::Battery], "no vence");
+        let _ = update(&mut state, toggle(Target::Workspaces));
+        assert_eq!(
+            state.active_notices(),
+            [Notice::Battery],
+            "otro módulo no lo oculta"
+        );
+        let _ = update(&mut state, toggle(Target::Workspaces));
+        let _ = update(&mut state, show(Target::Status));
+        assert!(
+            state.active_notices().is_empty() && state.pulsing(),
+            "status pulsa en su lugar"
+        );
+        expire_all(&mut state);
+        assert_eq!(state.active_notices(), [Notice::Battery]);
+        let _ = update(&mut state, battery_event(20, BatteryStatus::Charging));
+        assert_eq!(
+            state.active_notices(),
+            [Notice::Battery],
+            "aviso del cargador"
+        );
+        expire_all(&mut state);
+        assert!(state.strip.is_none() && !state.pulsing());
     }
 
     #[test]
@@ -693,25 +811,6 @@ mod tests {
         assert_eq!(severity(&battery(10, Discharging)), Severity::Critical);
         assert_eq!(severity(&battery(5, Charging)), Severity::Normal);
         assert_eq!(severity(&battery(5, NotCharging)), Severity::Normal);
-    }
-
-    #[test]
-    fn indicator_yields_only_to_status() {
-        let mut state = ready();
-        let _ = update(&mut state, battery_event(20, BatteryStatus::Discharging));
-        assert!(state.indicator.is_some());
-        let _ = update(&mut state, toggle(Target::Workspaces));
-        assert!(state.indicator.is_some(), "otro módulo fijado no lo oculta");
-        let _ = update(&mut state, show(Target::Status));
-        assert!(
-            state.indicator.is_none() && state.pulsing(),
-            "status pulsa en su lugar"
-        );
-        expire_all(&mut state);
-        assert!(state.indicator.is_some());
-        let _ = update(&mut state, battery_event(20, BatteryStatus::Charging));
-        expire_all(&mut state);
-        assert!(state.indicator.is_none() && !state.pulsing());
     }
 
     #[test]
