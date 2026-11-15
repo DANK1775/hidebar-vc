@@ -22,7 +22,19 @@ use crate::state::Input;
 pub(crate) fn listen(sender: Sender<Input>, hwnd: SendHwnd) -> io::Result<()> {
     let name = full_name();
     let name = name.to_ns_name::<GenericNamespaced>()?;
-    let listener = ListenerOptions::new().name(name).create_sync()?;
+    let listener = ListenerOptions::new()
+        .name(name)
+        .create_sync()
+        .map_err(|error| {
+            if error.kind() == ErrorKind::PermissionDenied {
+                io::Error::new(
+                    ErrorKind::AddrInUse,
+                    "ya hay un daemon escuchando; usa `hidebar quit` para cerrarlo",
+                )
+            } else {
+                error
+            }
+        })?;
     listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
     thread::spawn(move || {

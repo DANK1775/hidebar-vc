@@ -162,7 +162,8 @@ Notes:
 - `workspaces` is Linux-only for now: Windows has no equivalent compositor IPC, so
   `show workspaces` does nothing.
 - The calendar opens with `hidebar toggle clock` or `Ctrl+Shift+Alt+T` and closes when it loses
-  focus (clicking another window), by design.
+  focus (clicking another window), by design. When opened from a terminal, Windows may not give
+  it keyboard focus (foreground-lock rules); click it or use the hotkey, which does focus it.
 - v1 draws on the primary monitor only.
 - There is no GPU dependency; idle RSS is ~20 MB and measurements are done with
   `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`, `GetAdaptersAddresses` and
