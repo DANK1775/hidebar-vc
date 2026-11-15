@@ -357,6 +357,12 @@ impl Hidebar {
         self.expire(instant);
     }
 
+    /// Nuevo cuadro del pulso sin reformatear la hora (Linux, 20 fps).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn frame(&mut self, instant: Instant) {
+        self.frame = instant;
+    }
+
     /// La presentación decide qué eventos merecen aparecer.
     fn on_event(&mut self, event: Event) {
         match event {

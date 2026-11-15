@@ -4,72 +4,74 @@ use std::io;
 
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_A, VK_B,
-    VK_Q, VK_T, VK_W,
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VK_1, VK_2,
+    VK_3, VK_4, VK_A, VK_B, VK_T, VK_W,
 };
 
 use super::logging;
 use crate::command::{Command, Target};
 
-const HOTKEYS: [(i32, u32, u16, Command); 9] = [
+/// Ctrl+Alt+Win no es AltGr y no pisa reabrir pestaña, cerrar ventana ni
+/// marcadores. Mostrar usa letras; fijar usa 1=reloj, 2=estado, 3=workspaces,
+/// 4=todo. No hay atajo para salir: `hidebar quit`.
+const HOTKEYS: [(i32, u32, u16, Command); 8] = [
     (
         1,
-        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
         VK_T,
         Command::Show(Target::Clock),
     ),
     (
         2,
-        MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT,
-        VK_T,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
+        VK_1,
         Command::Toggle(Target::Clock),
     ),
     (
         3,
-        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
         VK_B,
         Command::Show(Target::Status),
     ),
     (
         4,
-        MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT,
-        VK_B,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
+        VK_2,
         Command::Toggle(Target::Status),
     ),
     (
         5,
-        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
         VK_W,
         Command::Show(Target::Workspaces),
     ),
     (
         6,
-        MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT,
-        VK_W,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
+        VK_3,
         Command::Toggle(Target::Workspaces),
     ),
     (
         7,
-        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
         VK_A,
         Command::Show(Target::All),
     ),
     (
         8,
-        MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT,
-        VK_A,
+        MOD_CONTROL | MOD_ALT | MOD_WIN | MOD_NOREPEAT,
+        VK_4,
         Command::Toggle(Target::All),
-    ),
-    (
-        9,
-        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
-        VK_Q,
-        Command::Quit,
     ),
 ];
 
 /// Registra todos los atajos posibles. Los que estén ocupados se omiten y se registran los demás.
+/// `HIDEBAR_NO_HOTKEYS=1` desactiva todos sin recompilar.
 pub(crate) fn register(hwnd: HWND) -> Vec<i32> {
+    if std::env::var_os("HIDEBAR_NO_HOTKEYS").is_some() {
+        return Vec::new();
+    }
+
     let mut registered = Vec::new();
 
     for &(id, modifiers, key, _) in &HOTKEYS {

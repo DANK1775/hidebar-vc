@@ -152,12 +152,13 @@ Global hotkeys (registered with `RegisterHotKey`):
 
 | Keys | Action |
 |---|---|
-| `Ctrl+Shift+T` / `B` / `W` / `A` | show clock / status / workspaces / all |
-| `Ctrl+Shift+Alt+T` / `B` / `W` / `A` | pin-unpin clock / status / workspaces / all |
-| `Ctrl+Shift+Q` | quit |
+| `Ctrl+Alt+Win+T` / `B` / `W` / `A` | show clock / status / workspaces / all |
+| `Ctrl+Alt+Win+1` / `2` / `3` / `4` | pin-unpin clock / status / workspaces / all |
 
-As with Hyprland, these global hotkeys take priority over the focused application; change them
-in `src/platform/windows/hotkeys.rs` if they collide with your browser.
+They deliberately avoid `Ctrl+Shift+T/W/B` (reopen tab, close window, bookmarks bar) and are not
+AltGr combinations, so they do not block typing. Stop the daemon with `hidebar quit`. Set
+`HIDEBAR_NO_HOTKEYS=1` to disable all hotkeys without recompiling, or edit
+`src/platform/windows/hotkeys.rs` and rebuild to change the defaults.
 
 Notes:
 
@@ -169,7 +170,8 @@ Notes:
 - v1 draws on the primary monitor only.
 - There is no GPU dependency; idle RSS is ~20 MB and measurements are done with
   `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`, `GetAdaptersAddresses` and
-  Core Audio (`IAudioEndpointVolume`).
+  Core Audio (`IAudioEndpointVolume`). Mute is polled every ~2 s (the default endpoint is
+  re-enumerated every 10 s), so the mute icon/notice can take up to 2 s.
 - The daemon uses a named pipe (`hidebar-<username>`); `HIDEBAR_SOCKET` overrides it with another
   name (not a filesystem path). `hidebar install`/`uninstall` manage the per-user autostart.
 
@@ -262,6 +264,7 @@ Useful environment variables:
   (e.g. `Discharging`) files, to simulate battery levels without waiting for it to drain.
 - `HIDEBAR_FOREGROUND` (Windows): keep the console visible even when the daemon owns it
   (useful when started by the Run key or a shortcut).
+- `HIDEBAR_NO_HOTKEYS` (Windows): disable all global hotkeys without recompiling.
 - `WGPU_BACKEND` (Linux): graphics backend for wgpu. The daemon sets it to `vulkan` when it is
   unset; any explicit value (e.g. `gl`) is respected. Windows does not use wgpu.
 

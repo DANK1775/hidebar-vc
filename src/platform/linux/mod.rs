@@ -105,7 +105,7 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
             UiMessage::Close => shell.state.close_calendar(),
         },
         Message::Tick => shell.state.tick(Instant::now()),
-        Message::Frame => shell.state.tick(Instant::now()),
+        Message::Frame => shell.state.frame(Instant::now()),
         Message::Closed(id) => {
             // Si el compositor cerró una superficie, `sync` la vuelve a abrir si sigue haciendo falta.
             shell.strip.take_if(|strip| *strip == id);

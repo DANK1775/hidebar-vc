@@ -29,10 +29,10 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DispatchMessageW, GetMessageW, HTTRANSPARENT, MSG, PostQuitMessage,
-    TranslateMessage, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY,
-    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
-    WM_SETFOCUS, WM_TIMER,
+    DefWindowProcW, DispatchMessageW, GetMessageW, HTTRANSPARENT, MSG, PostMessageW,
+    PostQuitMessage, TranslateMessage, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST,
+    WM_PAINT, WM_SETFOCUS, WM_TIMER,
 };
 
 use crate::command::Command;
@@ -204,6 +204,7 @@ impl Shell {
             return;
         }
 
+        win32::track_mouse_leave(self.calendar.window());
         let position = iced::Point::new(
             low_word(lparam) as f32 / self.area.scale,
             high_word(lparam) as f32 / self.area.scale,
@@ -225,7 +226,22 @@ impl Shell {
         for message in messages {
             self.apply_ui(message);
         }
-        self.sync();
+
+        // Hover/click solo repinta el calendario; la franja no cambia.
+        if self.state.calendar_wanted() {
+            self.calendar
+                .render(&self.state, ui::Surface::Calendar, self.cursor);
+        } else {
+            self.sync();
+        }
+    }
+
+    fn on_mouse_leave(&mut self) {
+        self.cursor = iced::mouse::Cursor::Unavailable;
+        if self.calendar_visible {
+            self.calendar
+                .render(&self.state, ui::Surface::Calendar, self.cursor);
+        }
     }
 
     fn on_key(&mut self, key: u32) {
@@ -238,7 +254,12 @@ impl Shell {
         };
 
         self.apply_ui(message);
-        self.sync();
+        if self.state.calendar_wanted() {
+            self.calendar
+                .render(&self.state, ui::Surface::Calendar, self.cursor);
+        } else {
+            self.sync();
+        }
     }
 
     fn on_focus(&mut self, focused: bool) {
@@ -291,9 +312,13 @@ impl Shell {
                 WM_KEYDOWN if message.hwnd == self.calendar.window() => {
                     self.on_key(message.wParam as u32);
                 }
-                WM_SETFOCUS if message.hwnd == self.calendar.window() => self.on_focus(true),
-                WM_KILLFOCUS if message.hwnd == self.calendar.window() => self.on_focus(false),
-                WM_DPICHANGED | WM_DISPLAYCHANGE => self.relayout(),
+                // WM_SETFOCUS/KILLFOCUS y WM_DPICHANGED/DISPLAYCHANGE se envían,
+                // no se postean: el WndProc los reenvía con estos mensajes.
+                win32::WM_APP_FOCUS => self.on_focus(message.wParam != 0),
+                win32::WM_APP_RELAYOUT => self.relayout(),
+                win32::WM_MOUSELEAVE if message.hwnd == self.calendar.window() => {
+                    self.on_mouse_leave();
+                }
                 // SAFETY: reenvío estándar de los mensajes que no gestiona el shell.
                 _ => unsafe {
                     TranslateMessage(&message);
@@ -309,6 +334,7 @@ impl Shell {
 }
 
 pub(crate) fn run_daemon() -> ExitCode {
+    win32::enable_dpi_awareness();
     logging::init();
     win32::hide_console_if_own();
     let area = geometry::primary();
@@ -427,6 +453,23 @@ unsafe fn window_proc(
 ) -> LRESULT {
     match message {
         WM_NCHITTEST if is_strip => HTTRANSPARENT as LRESULT,
+        WM_SETFOCUS | WM_KILLFOCUS if !is_strip => {
+            let focused = usize::from(message == WM_SETFOCUS);
+            // SAFETY: se reenvía el foco a la cola del hilo UI; el Shell lo
+            // consume en su bucle. DefWindowProc mantiene el comportamiento base.
+            unsafe {
+                PostMessageW(hwnd, win32::WM_APP_FOCUS, focused, 0);
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+        }
+        WM_DPICHANGED | WM_DISPLAYCHANGE => {
+            // SAFETY: se reenvía el aviso a la cola; `relayout` recalcula la
+            // geometría y recrea los DIB con el DPI nuevo.
+            unsafe {
+                PostMessageW(hwnd, win32::WM_APP_RELAYOUT, 0, 0);
+            }
+            0
+        }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             // SAFETY: BeginPaint/EndPaint emparejados sobre un HWND válido.

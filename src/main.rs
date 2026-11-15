@@ -16,6 +16,7 @@ uso:
   hidebar daemon            inicia el daemon
   hidebar show <módulo>     muestra unos segundos
   hidebar toggle <módulo>   fija/desfija (clock: abre/cierra el calendario)
+  hidebar quit              detiene el daemon
   hidebar install           añade hidebar al inicio de sesión (Windows)
   hidebar uninstall         lo quita (Windows)
 

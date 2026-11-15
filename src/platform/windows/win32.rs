@@ -1,17 +1,29 @@
 //! Helpers Win32 del shell. Todo unsafe está confinado aquí o en `render`.
 
+use std::mem::size_of;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND};
 use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, IDC_ARROW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW, SW_HIDE,
-    SetTimer, SetWindowTextW, ShowWindow, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetProcessDPIAware, SetTimer, SetWindowTextW, ShowWindow, WNDCLASSW, WNDPROC, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const WM_APP_EVENT: u32 = 0x8000 + 1;
+/// Mensajes enviados por el sistema (no posteados) que el WndProc reenvía a la cola.
+pub(crate) const WM_APP_FOCUS: u32 = WM_APP_EVENT + 1;
+pub(crate) const WM_APP_RELAYOUT: u32 = WM_APP_EVENT + 2;
+/// `WM_MOUSELEAVE` vive en `Win32::UI::Controls`; evitamos una feature extra.
+pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 pub(crate) const TIMER_ID: usize = 1;
 
 /// Handle de ventana que puede enviarse a los hilos de fuentes/IPC.
@@ -31,6 +43,36 @@ pub(crate) const CALENDAR_EX_STYLE: u32 = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_
 
 pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Declara Per-Monitor V2 antes de consultar DPI o crear ventanas. Sin esto
+/// Windows trata el proceso como DPI-unaware: `GetDpiForSystem` devuelve 96 y
+/// DWM estira las ventanas, con textos borrosos a 125–150 %.
+pub(crate) fn enable_dpi_awareness() {
+    // SAFETY: se llama una sola vez al principio del proceso, antes de crear
+    // ventanas o consultar DPI.
+    let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if ok == 0 {
+        // Fallback para sistemas antiguos o si la awareness ya estaba fijada.
+        unsafe {
+            SetProcessDPIAware();
+        }
+    }
+}
+
+/// Pide a Windows un `WM_MOUSELEAVE` cuando el cursor deja la ventana.
+pub(crate) fn track_mouse_leave(hwnd: HWND) {
+    let mut event = TRACKMOUSEEVENT {
+        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+
+    // SAFETY: `hwnd` es una ventana viva de este hilo; el struct es válido.
+    unsafe {
+        TrackMouseEvent(&mut event);
+    }
 }
 
 pub(crate) fn instance() -> HINSTANCE {
