@@ -1,32 +1,17 @@
-//! Daemon gráfico (ADR-0001, ADR-0002). Superficies, todas sin zona exclusiva:
+//! Estado del daemon: visibilidad, avisos, calendario y pulso.
 //!
-//! - **Franja** superior, click-through: una pastilla por módulo visible
-//!   (`workspaces` a la izquierda, `clock` al centro, `status` a la derecha).
-//!   Con `status` oculto, su lugar lo ocupan los avisos (ADR-0004): sólo los elementos que cambiaron.
-//! - **Calendario**, interactivo: se abre con `toggle clock`, debajo del reloj.
-//!
-//! Cada módulo está oculto, momentáneo (con vencimiento) o fijado; cada aviso, inactivo o con vencimiento
-//! (la batería baja, además, mientras dure). `sync` abre y cierra las superficies según ese estado después de
-//! cada mensaje.
+//! No conoce iced ni ventanas: recibe `Input` del shell y expone consultas
+//! (`strip_wanted`, `calendar_wanted`, `active_notices`, ...) para que cada
+//! plataforma decida cómo presentarlas.
 
-mod calendar;
-mod view;
-
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
-use iced::futures::channel::mpsc::UnboundedReceiver;
-use iced::keyboard::{self, key::Named};
-use iced::{Color, Subscription, Task, event, window};
-use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
-use iced_layershell::{daemon, to_layer_message};
 
+use crate::calendar;
+use crate::command::{Command, Target};
 use crate::event::{Audio, Battery, Event, Network, System, Workspaces};
-use crate::ipc::{Command, Target};
 
-const NAMESPACE: &str = "hidebar";
 /// Tiempo visible de cada módulo en modo momentáneo; volver a pedirlo lo reinicia.
 const WORKSPACES_DURATION: Duration = Duration::from_millis(1500);
 const CLOCK_DURATION: Duration = Duration::from_secs(3);
@@ -34,11 +19,11 @@ const STATUS_DURATION: Duration = Duration::from_secs(3);
 /// Tiempo visible de un aviso; repetir el mismo aviso lo reinicia.
 const NOTICE_DURATION: Duration = Duration::from_secs(3);
 /// Revisión de vencimientos mientras hay algo momentáneo.
-const TICK: Duration = Duration::from_millis(250);
+pub(crate) const TICK: Duration = Duration::from_millis(250);
 /// Refresco de la hora con el reloj fijado y nada momentáneo.
-const CLOCK_TICK: Duration = Duration::from_secs(1);
+pub(crate) const CLOCK_TICK: Duration = Duration::from_secs(1);
 /// Intervalo de cuadros mientras algo pulsa (20 fps: suficiente para un fade lento).
-const FRAME: Duration = Duration::from_millis(50);
+pub(crate) const FRAME: Duration = Duration::from_millis(50);
 
 /// Umbrales de batería (descargando), en porcentaje.
 const BATTERY_LOW: u8 = 25;
@@ -47,21 +32,21 @@ const BATTERY_CRITICAL: u8 = 10;
 const PULSE_PERIOD: Duration = Duration::from_secs(2);
 const PULSE_DIM: f32 = 0.7;
 
-/// Lo que llega al daemon desde fuera de iced: comandos del cliente y eventos de las fuentes.
+/// Lo que llega al daemon desde fuera del shell: comandos y eventos de las fuentes.
 #[derive(Debug, Clone)]
-pub enum Input {
+pub(crate) enum Input {
     Command(Command),
     Event(Event),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Module {
+pub(crate) enum Module {
     Workspaces,
     Clock,
     Status,
 }
 
-const MODULES: [Module; 3] = [Module::Workspaces, Module::Clock, Module::Status];
+pub(crate) const MODULES: [Module; 3] = [Module::Workspaces, Module::Clock, Module::Status];
 
 impl Module {
     fn duration(self) -> Duration {
@@ -76,7 +61,7 @@ impl Module {
 /// Aviso: un elemento de `status` mostrado solo, porque cambió (ADR-0004). En el orden de `status`.
 /// Para agregar uno: una variante aquí y en `NOTICES`, su regla en `on_event` y su dibujo en `view`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Notice {
+pub(crate) enum Notice {
     /// Cambió la conectividad.
     Network,
     /// Pasó de sonido a silencio o al revés.
@@ -95,51 +80,48 @@ enum Visibility {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Severity {
+pub(crate) enum Severity {
     Normal,
     Low,
     Critical,
 }
 
 /// Calendario abierto.
-struct Calendar {
+pub(crate) struct Calendar {
     /// Primer día del mes mostrado.
-    month: NaiveDate,
+    pub(crate) month: NaiveDate,
     /// El reloj ya estaba fijado al abrir: al cerrar el calendario se respeta.
-    clock_was_pinned: bool,
+    pub(crate) clock_was_pinned: bool,
     /// Recibió el foco alguna vez; sólo entonces perderlo lo cierra.
-    focused: bool,
+    pub(crate) focused: bool,
 }
 
-struct Hidebar {
+pub(crate) struct Hidebar {
     visibility: [Visibility; 3],
     /// Vencimiento de cada aviso momentáneo, por `Notice`.
     notices: [Option<Instant>; 3],
     /// Últimos datos conocidos; `None` hasta el primer evento de cada fuente.
-    workspaces: Option<Workspaces>,
-    battery: Option<Battery>,
-    system: Option<System>,
-    network: Option<Network>,
-    audio: Option<Audio>,
-    calendar: Option<Calendar>,
-    /// Superficies abiertas.
-    strip: Option<window::Id>,
-    calendar_surface: Option<window::Id>,
+    pub(crate) workspaces: Option<Workspaces>,
+    pub(crate) battery: Option<Battery>,
+    pub(crate) system: Option<System>,
+    pub(crate) network: Option<Network>,
+    pub(crate) audio: Option<Audio>,
+    pub(crate) calendar: Option<Calendar>,
     /// Origen del pulso de batería baja y último cuadro.
     pulse_origin: Instant,
     frame: Instant,
-    now: Now,
+    pub(crate) now: Now,
 }
 
 /// Hora y fecha ya formateadas para mostrar, y el día de hoy.
-struct Now {
-    time: String,
-    date: String,
-    today: NaiveDate,
+pub(crate) struct Now {
+    pub(crate) time: String,
+    pub(crate) date: String,
+    pub(crate) today: NaiveDate,
 }
 
 impl Hidebar {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             visibility: [Visibility::Hidden; 3],
             notices: [None; 3],
@@ -149,8 +131,6 @@ impl Hidebar {
             network: None,
             audio: None,
             calendar: None,
-            strip: None,
-            calendar_surface: None,
             pulse_origin: Instant::now(),
             frame: Instant::now(),
             now: now(),
@@ -165,7 +145,7 @@ impl Hidebar {
         self.visibility[module as usize] = visibility;
     }
 
-    fn visible(&self, module: Module) -> bool {
+    pub(crate) fn visible(&self, module: Module) -> bool {
         self.visibility(module) != Visibility::Hidden
     }
 
@@ -243,11 +223,38 @@ impl Hidebar {
         self.set_visibility(Module::Clock, Visibility::Pinned);
     }
 
-    fn close_calendar(&mut self) {
+    pub(crate) fn close_calendar(&mut self) {
         if let Some(calendar) = self.calendar.take()
             && !calendar.clock_was_pinned
         {
             self.set_visibility(Module::Clock, Visibility::Hidden);
+        }
+    }
+
+    pub(crate) fn shift_calendar(&mut self, delta: i32) {
+        if let Some(calendar) = &mut self.calendar {
+            calendar.month = calendar::shift_month(calendar.month, delta);
+        }
+    }
+
+    pub(crate) fn calendar_today(&mut self) {
+        let today = calendar::first_of_month(self.now.today);
+        if let Some(calendar) = &mut self.calendar {
+            calendar.month = today;
+        }
+    }
+
+    pub(crate) fn mark_calendar_focused(&mut self, focused: bool) {
+        if focused {
+            if let Some(calendar) = &mut self.calendar {
+                calendar.focused = true;
+            }
+        } else if self
+            .calendar
+            .as_ref()
+            .is_some_and(|calendar| calendar.focused)
+        {
+            self.close_calendar();
         }
     }
 
@@ -271,7 +278,7 @@ impl Hidebar {
     }
 
     /// Avisos a dibujar, en orden. Ninguno con `status` visible: la pastilla completa ya los contiene.
-    fn active_notices(&self) -> Vec<Notice> {
+    pub(crate) fn active_notices(&self) -> Vec<Notice> {
         if self.visible(Module::Status) {
             return Vec::new();
         }
@@ -293,130 +300,111 @@ impl Hidebar {
         }
     }
 
-    fn severity(&self) -> Severity {
+    pub(crate) fn severity(&self) -> Severity {
         self.battery.as_ref().map_or(Severity::Normal, severity)
     }
 
     /// Opacidad actual del pulso.
-    fn pulse(&self) -> f32 {
+    pub(crate) fn pulse(&self) -> f32 {
         pulse_alpha(self.frame.saturating_duration_since(self.pulse_origin))
     }
 
     /// Hay algo pulsando en pantalla: con batería baja, su icono está en `status` o en los avisos.
-    fn pulsing(&self) -> bool {
-        self.strip.is_some() && self.severity() != Severity::Normal
+    pub(crate) fn pulsing(&self) -> bool {
+        self.strip_wanted() && self.severity() != Severity::Normal
     }
-}
 
-#[to_layer_message(multi)]
-#[derive(Debug, Clone)]
-enum Message {
-    Input(Input),
-    Tick,
-    Frame,
-    Closed(window::Id),
-    Focus(window::Id, bool),
-    CalendarMonth(i32),
-    CalendarToday,
-    CalendarClose,
-}
+    /// La franja debe estar abierta: algún módulo visible o algún aviso activo.
+    pub(crate) fn strip_wanted(&self) -> bool {
+        MODULES.iter().any(|module| self.visible(*module)) || !self.active_notices().is_empty()
+    }
 
-pub fn run(inputs: UnboundedReceiver<Input>) -> Result<(), iced_layershell::Error> {
-    let inputs = Mutex::new(Some(inputs));
-    daemon(
-        move || {
-            let task = match inputs.lock().ok().and_then(|mut slot| slot.take()) {
-                Some(receiver) => Task::run(receiver, Message::Input),
-                None => Task::none(),
-            };
-            (Hidebar::new(), task)
-        },
-        || NAMESPACE.to_owned(),
-        update,
-        view::view,
-    )
-    .subscription(subscription)
-    .style(|_, _| iced::theme::Style {
-        background_color: Color::TRANSPARENT,
-        text_color: Color::WHITE,
-    })
-    .settings(Settings {
-        layer_settings: LayerShellSettings {
-            // Sin superficie inicial: sólo se dibuja cuando se pide.
-            start_mode: StartMode::Background,
-            layer: Layer::Overlay,
-            exclusive_zone: -1,
-            keyboard_interactivity: KeyboardInteractivity::None,
-            events_transparent: true,
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .run()
-}
+    pub(crate) fn calendar_wanted(&self) -> bool {
+        self.calendar.is_some()
+    }
 
-fn update(state: &mut Hidebar, message: Message) -> Task<Message> {
-    let task = handle(state, message);
-    Task::batch([task, sync(state)])
-}
+    /// Hay algo con vencimiento (módulo momentáneo o aviso); el shell debe revisar el reloj.
+    pub(crate) fn momentary(&self) -> bool {
+        self.visibility
+            .iter()
+            .any(|visibility| matches!(visibility, Visibility::Until(_)))
+            || self.notices.iter().any(Option::is_some)
+    }
 
-fn handle(state: &mut Hidebar, message: Message) -> Task<Message> {
-    match message {
-        Message::Input(Input::Command(command)) => match command {
-            Command::Show(target) => modules(target)
-                .iter()
-                .for_each(|module| state.show(*module)),
-            Command::Toggle(Target::All) => state.toggle_all(),
-            Command::Toggle(target) => modules(target)
-                .iter()
-                .for_each(|module| state.toggle(*module)),
-        },
-        Message::Input(Input::Event(event)) => on_event(state, event),
-        Message::Tick => {
-            state.now = now();
-            state.frame = Instant::now();
-            state.expire(state.frame);
-        }
-        Message::Frame => state.frame = Instant::now(),
-        Message::Closed(id) => {
-            // Si el compositor cerró una superficie, `sync` la vuelve a abrir si sigue haciendo falta.
-            state.strip.take_if(|strip| *strip == id);
-            if state
-                .calendar_surface
-                .take_if(|surface| *surface == id)
-                .is_some()
-            {
-                state.close_calendar();
+    pub(crate) fn handle(&mut self, input: Input) {
+        match input {
+            // Salir es decisión del shell, no del estado.
+            Input::Command(Command::Quit) => {}
+            Input::Command(Command::Show(target)) => {
+                for module in modules(target) {
+                    self.show(*module);
+                }
             }
+            Input::Command(Command::Toggle(Target::All)) => self.toggle_all(),
+            Input::Command(Command::Toggle(target)) => {
+                for module in modules(target) {
+                    self.toggle(*module);
+                }
+            }
+            Input::Event(event) => self.on_event(event),
         }
-        Message::Focus(id, focused) => {
-            if state.calendar_surface == Some(id)
-                && let Some(calendar) = &mut state.calendar
-            {
-                if focused {
-                    calendar.focused = true;
-                } else if calendar.focused {
-                    // ADR-0002 Q3: perder el foco (clic en otra ventana) lo cierra.
-                    state.close_calendar();
+    }
+
+    /// Avanza la hora y vence lo momentáneo.
+    pub(crate) fn tick(&mut self, instant: Instant) {
+        self.now = now();
+        self.frame = instant;
+        self.expire(instant);
+    }
+
+    /// Nuevo cuadro del pulso sin reformatear la hora (Linux, 20 fps).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn frame(&mut self, instant: Instant) {
+        self.frame = instant;
+    }
+
+    /// La presentación decide qué eventos merecen aparecer.
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Workspaces(workspaces) => {
+                let switched = self
+                    .workspaces
+                    .as_ref()
+                    .is_some_and(|old| old.active != workspaces.active);
+                self.workspaces = Some(workspaces);
+                if switched {
+                    self.show(Module::Workspaces);
+                }
+            }
+            Event::Battery(battery) => {
+                // Conectar o desconectar el cargador se avisa; el nivel bajo se avisa mientras dure.
+                let plug_changed = self
+                    .battery
+                    .as_ref()
+                    .is_some_and(|old| old.plugged() != battery.plugged());
+                self.battery = Some(battery);
+                if plug_changed {
+                    self.notify(Notice::Battery);
+                }
+            }
+            Event::System(system) => self.system = Some(system),
+            Event::Network(network) => {
+                let changed = self.network.is_some_and(|old| old != network);
+                self.network = Some(network);
+                if changed {
+                    self.notify(Notice::Network);
+                }
+            }
+            Event::Audio(audio) => {
+                // Sólo interesa si se oye o no; los cambios de volumen no aparecen.
+                let changed = self.audio.is_some_and(|old| old.silent() != audio.silent());
+                self.audio = Some(audio);
+                if changed {
+                    self.notify(Notice::Audio);
                 }
             }
         }
-        Message::CalendarMonth(delta) => {
-            if let Some(calendar) = &mut state.calendar {
-                calendar.month = calendar::shift_month(calendar.month, delta);
-            }
-        }
-        Message::CalendarToday => {
-            let today = calendar::first_of_month(state.now.today);
-            if let Some(calendar) = &mut state.calendar {
-                calendar.month = today;
-            }
-        }
-        Message::CalendarClose => state.close_calendar(),
-        // Las variantes de layer-shell generadas por la macro las consume el runtime.
-        _ => {}
     }
-    Task::none()
 }
 
 /// Módulos a los que se dirige un comando.
@@ -429,136 +417,13 @@ fn modules(target: Target) -> &'static [Module] {
     }
 }
 
-/// La presentación decide qué eventos merecen aparecer.
-fn on_event(state: &mut Hidebar, event: Event) {
-    match event {
-        Event::Workspaces(workspaces) => {
-            let switched = state
-                .workspaces
-                .as_ref()
-                .is_some_and(|old| old.active != workspaces.active);
-            state.workspaces = Some(workspaces);
-            if switched {
-                state.show(Module::Workspaces);
-            }
-        }
-        Event::Battery(battery) => {
-            // Conectar o desconectar el cargador se avisa; el nivel bajo se avisa mientras dure.
-            let plug_changed = state
-                .battery
-                .as_ref()
-                .is_some_and(|old| old.plugged() != battery.plugged());
-            state.battery = Some(battery);
-            if plug_changed {
-                state.notify(Notice::Battery);
-            }
-        }
-        Event::System(system) => state.system = Some(system),
-        Event::Network(network) => {
-            let changed = state.network.is_some_and(|old| old != network);
-            state.network = Some(network);
-            if changed {
-                state.notify(Notice::Network);
-            }
-        }
-        Event::Audio(audio) => {
-            // Sólo interesa si se oye o no; los cambios de volumen no aparecen.
-            let changed = state
-                .audio
-                .is_some_and(|old| old.silent() != audio.silent());
-            state.audio = Some(audio);
-            if changed {
-                state.notify(Notice::Audio);
-            }
-        }
-    }
-}
-
-/// Abre y cierra las superficies según el estado.
-fn sync(state: &mut Hidebar) -> Task<Message> {
-    let strip =
-        MODULES.iter().any(|module| state.visible(*module)) || !state.active_notices().is_empty();
-    let calendar = state.calendar.is_some();
-    Task::batch([
-        surface(&mut state.strip, strip, view::strip_settings),
-        surface(
-            &mut state.calendar_surface,
-            calendar,
-            view::calendar_settings,
-        ),
-    ])
-}
-
-fn surface(
-    slot: &mut Option<window::Id>,
-    wanted: bool,
-    settings: fn() -> NewLayerShellSettings,
-) -> Task<Message> {
-    match (wanted, *slot) {
-        (true, None) => {
-            let id = window::Id::unique();
-            *slot = Some(id);
-            Task::done(Message::NewLayerShell {
-                settings: settings(),
-                id,
-            })
-        }
-        (false, Some(id)) => {
-            *slot = None;
-            window::close(id)
-        }
-        _ => Task::none(),
-    }
-}
-
-fn subscription(state: &Hidebar) -> Subscription<Message> {
-    let mut subscriptions = vec![window::close_events().map(Message::Closed)];
-    let momentary = state
-        .visibility
-        .iter()
-        .any(|visibility| matches!(visibility, Visibility::Until(_)))
-        || state.notices.iter().any(Option::is_some);
-    if momentary {
-        subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
-    } else if state.visible(Module::Clock) {
-        subscriptions.push(iced::time::every(CLOCK_TICK).map(|_| Message::Tick));
-    }
-    if state.pulsing() {
-        subscriptions.push(iced::time::every(FRAME).map(|_| Message::Frame));
-    }
-    if state.calendar_surface.is_some() {
-        subscriptions.push(event::listen_with(calendar_input));
-    }
-    // En reposo sólo queda la escucha de cierres: cero trabajo.
-    Subscription::batch(subscriptions)
-}
-
-/// Teclado y foco del calendario: Esc cierra, ←/→ cambian de mes, Inicio vuelve al mes actual.
-fn calendar_input(event: iced::Event, _: event::Status, id: window::Id) -> Option<Message> {
-    match event {
-        iced::Event::Window(window::Event::Focused) => Some(Message::Focus(id, true)),
-        iced::Event::Window(window::Event::Unfocused) => Some(Message::Focus(id, false)),
-        iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(key),
-            ..
-        }) => match key {
-            Named::Escape => Some(Message::CalendarClose),
-            Named::ArrowLeft => Some(Message::CalendarMonth(-1)),
-            Named::ArrowRight => Some(Message::CalendarMonth(1)),
-            Named::Home => Some(Message::CalendarToday),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Opacidad del pulso: 1 al inicio de cada periodo, `1 - PULSE_DIM` a la mitad, y de vuelta a 1.
 fn pulse_alpha(elapsed: Duration) -> f32 {
     let phase = elapsed.as_secs_f32() % PULSE_PERIOD.as_secs_f32() / PULSE_PERIOD.as_secs_f32();
     1.0 - PULSE_DIM * (1.0 - (std::f32::consts::TAU * phase).cos()) / 2.0
 }
 
-fn severity(battery: &Battery) -> Severity {
+pub(crate) fn severity(battery: &Battery) -> Severity {
     match battery.percent {
         _ if battery.plugged() => Severity::Normal,
         percent if percent <= BATTERY_CRITICAL => Severity::Critical,
@@ -581,11 +446,11 @@ mod tests {
     use super::*;
     use crate::event::BatteryStatus;
 
-    fn input(event: Event) -> Message {
-        Message::Input(Input::Event(event))
+    fn input(event: Event) -> Input {
+        Input::Event(event)
     }
 
-    fn workspaces(active: i32) -> Message {
+    fn workspaces(active: i32) -> Input {
         input(Event::Workspaces(Workspaces {
             ids: vec![1, 2, 3],
             active,
@@ -596,126 +461,130 @@ mod tests {
         Battery { percent, status }
     }
 
-    fn battery_event(percent: u8, status: BatteryStatus) -> Message {
+    fn battery_event(percent: u8, status: BatteryStatus) -> Input {
         input(Event::Battery(battery(percent, status)))
     }
 
-    fn show(target: Target) -> Message {
-        Message::Input(Input::Command(Command::Show(target)))
+    fn show(target: Target) -> Input {
+        Input::Command(Command::Show(target))
     }
 
-    fn toggle(target: Target) -> Message {
-        Message::Input(Input::Command(Command::Toggle(target)))
+    fn toggle(target: Target) -> Input {
+        Input::Command(Command::Toggle(target))
+    }
+
+    fn apply(state: &mut Hidebar, input: Input) {
+        state.handle(input);
     }
 
     /// Estado con lecturas de todas las fuentes.
     fn ready() -> Hidebar {
         let mut state = Hidebar::new();
-        let _ = update(&mut state, workspaces(1));
-        let _ = update(&mut state, battery_event(80, BatteryStatus::Discharging));
-        let _ = update(&mut state, input(Event::System(System { cpu: 5, ram: 40 })));
-        let _ = update(&mut state, input(Event::Network(Network::Online)));
+        apply(&mut state, workspaces(1));
+        apply(&mut state, battery_event(80, BatteryStatus::Discharging));
+        apply(&mut state, input(Event::System(System { cpu: 5, ram: 40 })));
+        apply(&mut state, input(Event::Network(Network::Online)));
         state
     }
 
     /// Hace vencer todo lo momentáneo.
     fn expire_all(state: &mut Hidebar) {
         state.expire(Instant::now() + Duration::from_secs(60));
-        let _ = update(state, Message::Frame);
+        state.frame = Instant::now();
     }
 
     #[test]
     fn first_readings_do_not_show() {
         let state = ready();
-        assert!(state.strip.is_none());
+        assert!(!state.strip_wanted());
         assert!(MODULES.iter().all(|module| !state.visible(*module)));
     }
 
     #[test]
     fn switching_workspace_shows_it() {
         let mut state = ready();
-        let _ = update(&mut state, workspaces(1));
+        apply(&mut state, workspaces(1));
         assert!(!state.visible(Module::Workspaces), "sin cambio de activo");
-        let _ = update(&mut state, workspaces(2));
-        assert!(state.visible(Module::Workspaces) && state.strip.is_some());
+        apply(&mut state, workspaces(2));
+        assert!(state.visible(Module::Workspaces) && state.strip_wanted());
         assert!(!state.visible(Module::Clock));
     }
 
     #[test]
     fn show_all_is_momentary() {
         let mut state = ready();
-        let _ = update(&mut state, show(Target::All));
+        apply(&mut state, show(Target::All));
         assert!(
             MODULES
                 .iter()
                 .all(|module| matches!(state.visibility(*module), Visibility::Until(_)))
         );
         expire_all(&mut state);
-        assert!(state.strip.is_none());
+        assert!(!state.strip_wanted());
     }
 
     #[test]
     fn show_needs_a_reading() {
         let mut state = Hidebar::new();
-        let _ = update(&mut state, show(Target::Status));
-        let _ = update(&mut state, show(Target::Workspaces));
-        assert!(state.strip.is_none());
-        let _ = update(&mut state, show(Target::Clock));
+        apply(&mut state, show(Target::Status));
+        apply(&mut state, show(Target::Workspaces));
+        assert!(!state.strip_wanted());
+        apply(&mut state, show(Target::Clock));
         assert!(state.visible(Module::Clock));
     }
 
     #[test]
     fn toggle_pins_and_unpins() {
         let mut state = ready();
-        let _ = update(&mut state, toggle(Target::Status));
+        apply(&mut state, toggle(Target::Status));
         assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
         expire_all(&mut state);
-        assert!(state.strip.is_some(), "fijado: no vence");
-        let _ = update(&mut state, show(Target::Status));
+        assert!(state.strip_wanted(), "fijado: no vence");
+        apply(&mut state, show(Target::Status));
         assert_eq!(
             state.visibility(Module::Status),
             Visibility::Pinned,
             "show no lo desfija"
         );
-        let _ = update(&mut state, input(Event::Network(Network::NoInternet)));
+        apply(&mut state, input(Event::Network(Network::NoInternet)));
         assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
         assert!(state.active_notices().is_empty(), "fijado: sin avisos");
-        let _ = update(&mut state, toggle(Target::Status));
-        assert!(!state.visible(Module::Status) && state.strip.is_none());
+        apply(&mut state, toggle(Target::Status));
+        assert!(!state.visible(Module::Status) && !state.strip_wanted());
     }
 
     #[test]
     fn toggle_all_pins_everything_then_unpins() {
         let mut state = ready();
-        let _ = update(&mut state, toggle(Target::All));
+        apply(&mut state, toggle(Target::All));
         assert!(
             MODULES
                 .iter()
                 .all(|module| state.visibility(*module) == Visibility::Pinned)
         );
         assert!(state.calendar.is_none(), "el reloj se fija sin calendario");
-        let _ = update(&mut state, toggle(Target::All));
+        apply(&mut state, toggle(Target::All));
         assert!(MODULES.iter().all(|module| !state.visible(*module)));
 
         // Con un solo módulo fijado, toggle all desfija en vez de fijar.
-        let _ = update(&mut state, toggle(Target::Workspaces));
-        let _ = update(&mut state, toggle(Target::All));
+        apply(&mut state, toggle(Target::Workspaces));
+        apply(&mut state, toggle(Target::All));
         assert!(MODULES.iter().all(|module| !state.visible(*module)));
     }
 
     #[test]
     fn network_and_charger_changes_notify_without_status() {
         let mut state = ready();
-        let _ = update(&mut state, input(Event::Network(Network::Online)));
+        apply(&mut state, input(Event::Network(Network::Online)));
         assert!(state.active_notices().is_empty(), "sin cambio");
-        let _ = update(&mut state, input(Event::Network(Network::Offline)));
+        apply(&mut state, input(Event::Network(Network::Offline)));
         assert_eq!(state.active_notices(), [Notice::Network]);
-        assert!(!state.visible(Module::Status) && state.strip.is_some());
+        assert!(!state.visible(Module::Status) && state.strip_wanted());
         expire_all(&mut state);
-        assert!(state.strip.is_none());
-        let _ = update(&mut state, battery_event(79, BatteryStatus::Discharging));
+        assert!(!state.strip_wanted());
+        apply(&mut state, battery_event(79, BatteryStatus::Discharging));
         assert!(state.active_notices().is_empty(), "cambio de nivel");
-        let _ = update(&mut state, battery_event(79, BatteryStatus::Charging));
+        apply(&mut state, battery_event(79, BatteryStatus::Charging));
         assert_eq!(state.active_notices(), [Notice::Battery]);
     }
 
@@ -723,84 +592,84 @@ mod tests {
     fn muting_notifies_but_volume_changes_do_not() {
         let audio = |muted, volume| input(Event::Audio(Audio { muted, volume }));
         let mut state = ready();
-        let _ = update(&mut state, audio(false, 50));
+        apply(&mut state, audio(false, 50));
         assert!(state.active_notices().is_empty(), "primera lectura");
-        let _ = update(&mut state, audio(false, 70));
+        apply(&mut state, audio(false, 70));
         assert!(state.active_notices().is_empty(), "cambio de volumen");
-        let _ = update(&mut state, audio(true, 70));
+        apply(&mut state, audio(true, 70));
         assert_eq!(state.active_notices(), [Notice::Audio], "silenciado");
         expire_all(&mut state);
-        let _ = update(&mut state, audio(true, 0));
+        apply(&mut state, audio(true, 0));
         assert!(state.active_notices().is_empty(), "sigue sin oírse");
-        let _ = update(&mut state, audio(false, 30));
+        apply(&mut state, audio(false, 30));
         assert_eq!(state.active_notices(), [Notice::Audio], "vuelve el sonido");
     }
 
     #[test]
     fn notices_accumulate_in_status_order_and_yield_to_status() {
         let mut state = ready();
-        let _ = update(
+        apply(
             &mut state,
             input(Event::Audio(Audio {
                 muted: false,
                 volume: 50,
             })),
         );
-        let _ = update(&mut state, battery_event(80, BatteryStatus::Charging));
-        let _ = update(
+        apply(&mut state, battery_event(80, BatteryStatus::Charging));
+        apply(
             &mut state,
             input(Event::Audio(Audio {
                 muted: true,
                 volume: 50,
             })),
         );
-        let _ = update(&mut state, input(Event::Network(Network::NoInternet)));
+        apply(&mut state, input(Event::Network(Network::NoInternet)));
         assert_eq!(
             state.active_notices(),
             [Notice::Network, Notice::Audio, Notice::Battery]
         );
-        let _ = update(&mut state, input(Event::Network(Network::Online)));
+        apply(&mut state, input(Event::Network(Network::Online)));
         assert_eq!(state.active_notices().len(), 3, "repetir no duplica");
 
-        let _ = update(&mut state, show(Target::Status));
+        apply(&mut state, show(Target::Status));
         assert!(
             state.active_notices().is_empty(),
             "status completo los cubre"
         );
         expire_all(&mut state);
-        assert!(state.active_notices().is_empty() && state.strip.is_none());
+        assert!(state.active_notices().is_empty() && !state.strip_wanted());
     }
 
     #[test]
     fn low_battery_notice_persists_and_yields_only_to_status() {
         let mut state = ready();
-        let _ = update(&mut state, battery_event(20, BatteryStatus::Discharging));
+        apply(&mut state, battery_event(20, BatteryStatus::Discharging));
         assert_eq!(state.active_notices(), [Notice::Battery]);
-        assert!(state.strip.is_some() && state.pulsing());
+        assert!(state.strip_wanted() && state.pulsing());
         expire_all(&mut state);
         assert_eq!(state.active_notices(), [Notice::Battery], "no vence");
-        let _ = update(&mut state, toggle(Target::Workspaces));
+        apply(&mut state, toggle(Target::Workspaces));
         assert_eq!(
             state.active_notices(),
             [Notice::Battery],
             "otro módulo no lo oculta"
         );
-        let _ = update(&mut state, toggle(Target::Workspaces));
-        let _ = update(&mut state, show(Target::Status));
+        apply(&mut state, toggle(Target::Workspaces));
+        apply(&mut state, show(Target::Status));
         assert!(
             state.active_notices().is_empty() && state.pulsing(),
             "status pulsa en su lugar"
         );
         expire_all(&mut state);
         assert_eq!(state.active_notices(), [Notice::Battery]);
-        let _ = update(&mut state, battery_event(20, BatteryStatus::Charging));
+        apply(&mut state, battery_event(20, BatteryStatus::Charging));
         assert_eq!(
             state.active_notices(),
             [Notice::Battery],
             "aviso del cargador"
         );
         expire_all(&mut state);
-        assert!(state.strip.is_none() && !state.pulsing());
+        assert!(!state.strip_wanted() && !state.pulsing());
     }
 
     #[test]
@@ -825,40 +694,39 @@ mod tests {
     #[test]
     fn toggle_clock_opens_and_closes_calendar() {
         let mut state = ready();
-        let _ = update(&mut state, toggle(Target::Clock));
-        assert!(state.calendar.is_some() && state.calendar_surface.is_some());
+        apply(&mut state, toggle(Target::Clock));
+        assert!(state.calendar.is_some() && state.calendar_wanted());
         assert_eq!(state.visibility(Module::Clock), Visibility::Pinned);
-        let _ = update(&mut state, Message::CalendarMonth(1));
+        state.shift_calendar(1);
         let shown = state.calendar.as_ref().unwrap().month;
         assert_eq!(shown, calendar::shift_month(state.now.today, 1));
-        let _ = update(&mut state, Message::CalendarToday);
+        state.calendar_today();
         assert_eq!(
             state.calendar.as_ref().unwrap().month,
             calendar::first_of_month(state.now.today)
         );
-        let _ = update(&mut state, toggle(Target::Clock));
-        assert!(state.calendar.is_none() && state.calendar_surface.is_none());
+        apply(&mut state, toggle(Target::Clock));
+        assert!(state.calendar.is_none() && !state.calendar_wanted());
         assert!(!state.visible(Module::Clock), "el reloj vuelve a ocultarse");
     }
 
     #[test]
     fn calendar_respects_previously_pinned_clock() {
         let mut state = ready();
-        let _ = update(&mut state, toggle(Target::All));
-        let _ = update(&mut state, toggle(Target::Clock));
-        let _ = update(&mut state, Message::CalendarClose);
+        apply(&mut state, toggle(Target::All));
+        apply(&mut state, toggle(Target::Clock));
+        state.close_calendar();
         assert_eq!(state.visibility(Module::Clock), Visibility::Pinned);
     }
 
     #[test]
     fn calendar_closes_on_focus_loss_only_after_focus() {
         let mut state = ready();
-        let _ = update(&mut state, toggle(Target::Clock));
-        let surface = state.calendar_surface.unwrap();
-        let _ = update(&mut state, Message::Focus(surface, false));
+        apply(&mut state, toggle(Target::Clock));
+        state.mark_calendar_focused(false);
         assert!(state.calendar.is_some(), "nunca tuvo foco: no se cierra");
-        let _ = update(&mut state, Message::Focus(surface, true));
-        let _ = update(&mut state, Message::Focus(surface, false));
+        state.mark_calendar_focused(true);
+        state.mark_calendar_focused(false);
         assert!(state.calendar.is_none());
     }
 }

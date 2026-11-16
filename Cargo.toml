@@ -6,7 +6,62 @@ license = "MIT"
 
 [dependencies]
 chrono = "0.4.45"
-iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "web-colors", "tokio", "wayland", "svg"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "tokio",
+    "wayland",
+    "svg",
+] }
 iced_layershell = "0.19.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "svg",
+] }
+iced_runtime = "0.14.0"
+iced_tiny_skia = { version = "0.14.1", default-features = false, features = ["svg"] }
+tiny-skia = "0.11.4"
+interprocess = "2.4.8"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_System_Variant",
+] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

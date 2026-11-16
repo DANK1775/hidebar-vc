@@ -1,0 +1,309 @@
+//! Shell Linux: `iced_layershell` + Hyprland/Niri. La lógica vive en `state` y `ui`.
+
+mod audio;
+mod battery;
+mod hyprland;
+mod ipc;
+mod network;
+mod niri;
+mod system;
+
+use std::io;
+use std::process::ExitCode;
+use std::sync::Mutex;
+use std::time::Instant;
+
+use iced::futures::channel::mpsc::UnboundedReceiver;
+use iced::keyboard::{self, key::Named};
+use iced::widget::space;
+use iced::{Color, Element, Subscription, Task, event, window};
+use iced_layershell::reexport::{
+    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+};
+use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
+use iced_layershell::{daemon, to_layer_message};
+
+use crate::command::Command;
+use crate::state::{CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
+use crate::ui::{self, Message as UiMessage};
+
+const NAMESPACE: &str = "hidebar";
+
+struct Shell {
+    state: Hidebar,
+    strip: Option<window::Id>,
+    calendar_surface: Option<window::Id>,
+}
+
+impl Shell {
+    fn new() -> Self {
+        Self {
+            state: Hidebar::new(),
+            strip: None,
+            calendar_surface: None,
+        }
+    }
+}
+
+#[to_layer_message(multi)]
+#[derive(Debug, Clone)]
+enum Message {
+    Input(Input),
+    Ui(UiMessage),
+    Tick,
+    Frame,
+    Closed(window::Id),
+    Focus(window::Id, bool),
+}
+
+fn run(inputs: UnboundedReceiver<Input>) -> Result<(), iced_layershell::Error> {
+    let inputs = Mutex::new(Some(inputs));
+    daemon(
+        move || {
+            let task = match inputs.lock().ok().and_then(|mut slot| slot.take()) {
+                Some(receiver) => Task::run(receiver, Message::Input),
+                None => Task::none(),
+            };
+            (Shell::new(), task)
+        },
+        || NAMESPACE.to_owned(),
+        update,
+        view,
+    )
+    .subscription(subscription)
+    .style(|_, _| iced::theme::Style {
+        background_color: Color::TRANSPARENT,
+        text_color: Color::WHITE,
+    })
+    .settings(Settings {
+        layer_settings: LayerShellSettings {
+            // Sin superficie inicial: sólo se dibuja cuando se pide.
+            start_mode: StartMode::Background,
+            layer: Layer::Overlay,
+            exclusive_zone: -1,
+            keyboard_interactivity: KeyboardInteractivity::None,
+            events_transparent: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .run()
+}
+
+fn update(shell: &mut Shell, message: Message) -> Task<Message> {
+    let task = handle(shell, message);
+    Task::batch([task, sync(shell)])
+}
+
+fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
+    match message {
+        Message::Input(Input::Command(Command::Quit)) => return iced::exit(),
+        Message::Input(input) => shell.state.handle(input),
+        Message::Ui(message) => match message {
+            UiMessage::Month(delta) => shell.state.shift_calendar(delta),
+            UiMessage::Today => shell.state.calendar_today(),
+            UiMessage::Close => shell.state.close_calendar(),
+        },
+        Message::Tick => shell.state.tick(Instant::now()),
+        Message::Frame => shell.state.frame(Instant::now()),
+        Message::Closed(id) => {
+            // Si el compositor cerró una superficie, `sync` la vuelve a abrir si sigue haciendo falta.
+            shell.strip.take_if(|strip| *strip == id);
+            if shell
+                .calendar_surface
+                .take_if(|surface| *surface == id)
+                .is_some()
+            {
+                shell.state.close_calendar();
+            }
+        }
+        Message::Focus(id, focused) if shell.calendar_surface == Some(id) => {
+            shell.state.mark_calendar_focused(focused);
+        }
+        // Las variantes de layer-shell generadas por la macro las consume el runtime.
+        _ => {}
+    }
+    Task::none()
+}
+
+fn view(shell: &Shell, id: window::Id) -> Element<'_, Message> {
+    if shell.strip == Some(id) {
+        ui::view(&shell.state, ui::Surface::Strip).map(Message::Ui)
+    } else if shell.calendar_surface == Some(id) {
+        ui::view(&shell.state, ui::Surface::Calendar).map(Message::Ui)
+    } else {
+        space().into()
+    }
+}
+
+/// Abre y cierra las superficies según el estado.
+fn sync(shell: &mut Shell) -> Task<Message> {
+    Task::batch([
+        surface(&mut shell.strip, shell.state.strip_wanted(), strip_settings),
+        surface(
+            &mut shell.calendar_surface,
+            shell.state.calendar_wanted(),
+            calendar_settings,
+        ),
+    ])
+}
+
+fn surface(
+    slot: &mut Option<window::Id>,
+    wanted: bool,
+    settings: fn() -> NewLayerShellSettings,
+) -> Task<Message> {
+    match (wanted, *slot) {
+        (true, None) => {
+            let id = window::Id::unique();
+            *slot = Some(id);
+            Task::done(Message::NewLayerShell {
+                settings: settings(),
+                id,
+            })
+        }
+        (false, Some(id)) => {
+            *slot = None;
+            window::close(id)
+        }
+        _ => Task::none(),
+    }
+}
+
+fn subscription(shell: &Shell) -> Subscription<Message> {
+    let mut subscriptions = vec![window::close_events().map(Message::Closed)];
+    if shell.state.momentary() {
+        subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
+    } else if shell.state.visible(Module::Clock) {
+        subscriptions.push(iced::time::every(CLOCK_TICK).map(|_| Message::Tick));
+    }
+    if shell.state.pulsing() {
+        subscriptions.push(iced::time::every(FRAME).map(|_| Message::Frame));
+    }
+    if shell.calendar_surface.is_some() {
+        subscriptions.push(event::listen_with(calendar_input));
+    }
+    // En reposo sólo queda la escucha de cierres: cero trabajo.
+    Subscription::batch(subscriptions)
+}
+
+/// Teclado y foco del calendario: Esc cierra, ←/→ cambian de mes, Inicio vuelve al mes actual.
+fn calendar_input(event: iced::Event, _: event::Status, id: window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Window(window::Event::Focused) => Some(Message::Focus(id, true)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::Focus(id, false)),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(key),
+            ..
+        }) => match key {
+            Named::Escape => Some(Message::Ui(UiMessage::Close)),
+            Named::ArrowLeft => Some(Message::Ui(UiMessage::Month(-1))),
+            Named::ArrowRight => Some(Message::Ui(UiMessage::Month(1))),
+            Named::Home => Some(Message::Ui(UiMessage::Today)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn strip_settings() -> NewLayerShellSettings {
+    NewLayerShellSettings {
+        size: Some((0, ui::STRIP_HEIGHT)),
+        layer: Layer::Overlay,
+        anchor: Anchor::Top | Anchor::Left | Anchor::Right,
+        // -1: no reserva espacio ni se desplaza por la zona exclusiva de otras barras.
+        exclusive_zone: Some(-1),
+        margin: None,
+        keyboard_interactivity: KeyboardInteractivity::None,
+        output_option: OutputOption::Active,
+        events_transparent: true,
+        namespace: Some(NAMESPACE.to_owned()),
+    }
+}
+
+/// Debajo del reloj, centrado (anclado sólo arriba). Recibe cursor y teclado.
+fn calendar_settings() -> NewLayerShellSettings {
+    let (width, height) = ui::calendar_size();
+    NewLayerShellSettings {
+        size: Some((width, height)),
+        anchor: Anchor::Top,
+        margin: Some((ui::STRIP_HEIGHT as i32 + ui::CALENDAR_GAP, 0, 0, 0)),
+        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        events_transparent: false,
+        ..strip_settings()
+    }
+}
+
+pub(crate) fn run_daemon() -> ExitCode {
+    use_vulkan_by_default();
+
+    let listener = match ipc::bind() {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("hidebar: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+    let commands = sender.clone();
+    ipc::serve(listener, move |command| {
+        commands.unbounded_send(Input::Command(command)).is_ok()
+    });
+
+    // Cada fuente recibe su propio emisor hacia el mismo canal.
+    let emitter = || {
+        let events = sender.clone();
+        move |event| events.unbounded_send(Input::Event(event)).is_ok()
+    };
+
+    // El socket debe existir: una `NIRI_SOCKET` vieja no debe tapar a Hyprland.
+    if niri::available() {
+        niri::listen(emitter());
+    } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        hyprland::listen(emitter());
+    } else {
+        eprintln!(
+            "hidebar: ni NIRI_SOCKET ni HYPRLAND_INSTANCE_SIGNATURE definido; sin eventos de workspaces"
+        );
+    }
+
+    battery::listen(emitter());
+    system::listen(emitter());
+    network::listen(emitter());
+    audio::listen(emitter());
+
+    let result = run(receiver);
+    let _ = std::fs::remove_file(ipc::socket_path());
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("hidebar: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub(crate) fn send(command: Command) -> io::Result<String> {
+    ipc::send(command)
+}
+
+pub(crate) fn install() -> ExitCode {
+    eprintln!("hidebar: install solo está implementado en Windows");
+    ExitCode::FAILURE
+}
+
+pub(crate) fn uninstall() -> ExitCode {
+    eprintln!("hidebar: uninstall solo está implementado en Windows");
+    ExitCode::FAILURE
+}
+
+/// Vulkan por defecto (ADR-0003): sin esto, wgpu enumera también GL y EGL carga todos los
+/// drivers instalados. Se respeta un `WGPU_BACKEND` explícito.
+fn use_vulkan_by_default() {
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: se llama al inicio de `run_daemon`, antes de crear ningún hilo.
+        unsafe { std::env::set_var("WGPU_BACKEND", "vulkan") };
+    }
+}
