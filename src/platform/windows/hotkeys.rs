@@ -68,7 +68,9 @@ const HOTKEYS: [(i32, u32, u16, Command); 8] = [
 /// Registra todos los atajos posibles. Los que estén ocupados se omiten y se registran los demás.
 /// `HIDEBAR_NO_HOTKEYS=1` desactiva todos sin recompilar.
 pub(crate) fn register(hwnd: HWND) -> Vec<i32> {
-    if std::env::var_os("HIDEBAR_NO_HOTKEYS").is_some() {
+    if std::env::var("HIDEBAR_NO_HOTKEYS")
+        .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no" | "off"))
+    {
         return Vec::new();
     }
 

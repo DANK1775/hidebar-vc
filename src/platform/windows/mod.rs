@@ -191,10 +191,6 @@ impl Shell {
         let Some(command) = hotkeys::command(id) else {
             return;
         };
-        if command == Command::Quit {
-            self.quit = true;
-            return;
-        }
         self.state.handle(Input::Command(command));
         self.sync();
     }
@@ -275,8 +271,14 @@ impl Shell {
         }
     }
 
-    fn relayout(&mut self) {
+    fn relayout(&mut self, dpi: Option<u32>) {
         self.area = geometry::primary();
+
+        // `GetDpiForSystem` es el DPI del arranque; tras un cambio de escala
+        // hay que usar el wParam de WM_DPICHANGED o el DPI de la ventana.
+        if let Some(dpi) = dpi.or_else(|| win32::dpi_for_window(self.strip.window())) {
+            self.area.scale = dpi as f32 / 96.0;
+        }
 
         self.strip.move_resize(
             POINT {
@@ -315,7 +317,9 @@ impl Shell {
                 // WM_SETFOCUS/KILLFOCUS y WM_DPICHANGED/DISPLAYCHANGE se envían,
                 // no se postean: el WndProc los reenvía con estos mensajes.
                 win32::WM_APP_FOCUS => self.on_focus(message.wParam != 0),
-                win32::WM_APP_RELAYOUT => self.relayout(),
+                win32::WM_APP_RELAYOUT => {
+                    self.relayout((message.wParam != 0).then_some(message.wParam as u32));
+                }
                 win32::WM_MOUSELEAVE if message.hwnd == self.calendar.window() => {
                     self.on_mouse_leave();
                 }
@@ -462,9 +466,18 @@ unsafe fn window_proc(
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
         }
-        WM_DPICHANGED | WM_DISPLAYCHANGE => {
-            // SAFETY: se reenvía el aviso a la cola; `relayout` recalcula la
-            // geometría y recrea los DIB con el DPI nuevo.
+        WM_DPICHANGED => {
+            // SAFETY: el wParam lleva el DPI nuevo en la palabra baja; se
+            // reenvía para que `relayout` no dependa de GetDpiForSystem.
+            let dpi = wparam & 0xFFFF;
+            unsafe {
+                PostMessageW(hwnd, win32::WM_APP_RELAYOUT, dpi, 0);
+            }
+            0
+        }
+        WM_DISPLAYCHANGE => {
+            // SAFETY: se reenvía el aviso; `relayout` consulta el DPI de la
+            // ventana si el mensaje no trae uno.
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_RELAYOUT, 0, 0);
             }

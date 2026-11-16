@@ -7,7 +7,7 @@ use windows_sys::Win32::Foundation::{HINSTANCE, HWND};
 use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -53,11 +53,19 @@ pub(crate) fn enable_dpi_awareness() {
     // ventanas o consultar DPI.
     let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if ok == 0 {
-        // Fallback para sistemas antiguos o si la awareness ya estaba fijada.
+        // SAFETY: fallback de la misma inicialización de DPI; no crea recursos
+        // y se ejecuta antes de cualquier ventana o consulta de DPI.
         unsafe {
             SetProcessDPIAware();
         }
     }
+}
+
+/// DPI efectivo de una ventana viva; `None` si Windows no lo puede determinar.
+pub(crate) fn dpi_for_window(hwnd: HWND) -> Option<u32> {
+    // SAFETY: `hwnd` es una ventana viva de este proceso.
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    (dpi != 0).then_some(dpi)
 }
 
 /// Pide a Windows un `WM_MOUSELEAVE` cuando el cursor deja la ventana.
